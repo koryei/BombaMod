@@ -48,8 +48,10 @@ class Settings:
     max_concurrent_moderation: int
     http_timeout_seconds: int
     max_image_bytes: int
+    max_message_chars: int
     image_scan_enabled_by_default: bool
     allow_openrouter_text: bool
+    disable_openai_text: bool
     log_level: str
 
     @classmethod
@@ -103,8 +105,10 @@ class Settings:
             max_image_bytes=_integer(
                 "MAX_IMAGE_BYTES", 8_000_000, minimum=100_000, maximum=20_000_000
             ),
+            max_message_chars=_integer("MAX_MESSAGE_CHARS", 6_000, minimum=1_000, maximum=20_000),
             image_scan_enabled_by_default=_boolean("IMAGE_SCAN_ENABLED_BY_DEFAULT", False),
             allow_openrouter_text=_boolean("ALLOW_OPENROUTER_TEXT", False),
+            disable_openai_text=_boolean("DISABLE_OPENAI_TEXT", False),
             log_level=log_level,
         )
 

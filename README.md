@@ -17,7 +17,7 @@ BombaMod is an MIT-licensed self-hosted bot. You can use, modify, and redistribu
 
 ### How policy setup relates to model training
 
-`/bm rules` supplies moderator-authored server policy to Nemotron on each decision. This is in-context policy, not fine-tuning: it does not change the model's parameters and does not make the model learn automatically from member actions. `/bm feedback` stores only a correction label and category names for an in-memory case; use labels to measure a separate offline test set and tune rules/thresholds. Labels are **not** used to retrain a model.
+`/bm rules` supplies moderator-authored server policy to Nemotron on each decision. This is in-context policy, not fine-tuning: it does not change the model's parameters and does not make the model learn automatically from member actions. `/bm feedback` stores the message ID, moderator ID, predicted/corrected action and category labels for a case held in memory; only cases still available in that bot process can be labeled. Use labels to measure a separate offline test set and tune rules/thresholds. Labels are **not** used to retrain a model.
 
 A responsible improvement loop is: start with clear written rules and automatic actions off; create synthetic examples for allowed/prohibited/ambiguous cases; have moderators label representative, de-identified cases; measure false positives and false negatives by category; revise the rules or confidence threshold; replay the test set; then pilot in review-only mode before enabling actions. Fine-tuning a 120B model requires separate compute, data rights/consent, dataset governance, evaluation, and deployment. BombaMod does not do this in the bot process, and OpenRouter's free inference endpoint is not a training service.
 
@@ -54,24 +54,27 @@ Global slash-command changes may take a while to appear. Set `DISCORD_GUILD_ID` 
 
 ## Slash commands
 
-All commands are under `/bm` and configuration commands require **Manage Server** or **Administrator**:
+Commands under `/bm` are restricted to moderators (Manage Messages/Moderate Members) or server managers. `/bm setup`, `/bm enforcement`, `/bm privacy`, `/bm review-channel`, and `/bm pause` require **Manage Server** or **Administrator**; only a server manager may enable external content sharing or high-impact actions:
 
 | Command | Purpose |
 | --- | --- |
-| `/bm setup [channels]` | Enable moderation and optionally limit monitored channels. Empty means every channel, so configure private/opt-out channels as needed. |
+| `/bm setup [channels]` | Enable moderation and optionally limit monitored channels. Empty means every channel, so configure private/opt-out channels as needed. Uses `IMAGE_SCAN_ENABLED_BY_DEFAULT` for the guild's initial image setting. |
 | `/bm rules text` | Set moderator-authored policy (up to 6000 chars); this is decision context, not model training. |
 | `/bm enforcement enabled max_timeout_minutes min_confidence allow_bans` | Configure actions. Bans require a separate explicit opt-in. |
 | `/bm privacy share_text scan_images` | Independently opt into best-effort-redacted flagged text sent to OpenRouter and image attachments sent to OpenAI. Both are off by default. |
 | `/bm review-channel [channel]` | Choose where moderator review and action notices go. |
-| `/bm feedback message_id corrected_action` | Label a recent in-memory case without storing content. Restarting the bot clears this case context. |
-| `/bm status` | Show current guild settings. |
+| `/bm feedback message_id corrected_action` | Label a recent in-memory case without storing content. Only scanned cases still in process memory are labelable. |
+| `/bm export-feedback` | Export retained labels without Discord IDs or raw content; treat exports as private. |
+| `/bm retention strike_days feedback_days` | Set metadata retention windows (1–365 days). |
+| `/bm pause` | Immediately disable new moderation work for the server. |
+| `/bm status` | Show current guild settings and recent feedback-label count. |
 
 ## Privacy and safety
 
-- **OpenAI:** Message text is sent to OpenAI for classification whenever moderation is enabled. If opted in, enabled images are fetched from Discord's HTTPS CDN and sent with the text to OpenAI. The official model accepts text/images (not audio) and supports images up to 20 MB; BombaMod uses a configurable lower download cap by default. OpenAI documents API content as not used for model training by default, but says abuse-monitoring logs may retain content up to 30 days. See [OpenAI data controls](https://developers.openai.com/api/docs/guides/your-data).
+- **OpenAI:** Message text is sent to OpenAI for classification whenever moderation is enabled, unless the operator sets `DISABLE_OPENAI_TEXT=true` (in which case every eligible message is escalated rather than treated as cleared). If opted in, enabled images are fetched from Discord's HTTPS CDN and sent with the text to OpenAI. The official model accepts text/images (not audio) and supports images up to 20 MB; BombaMod uses a configurable lower download cap by default. OpenAI documents API content as not used for model training by default, but says abuse-monitoring logs may retain content up to 30 days. See [OpenAI data controls](https://developers.openai.com/api/docs/guides/your-data).
 - **Child safety:** OpenAI says **do not send known or suspected child sexual abuse material (CSAM) to its Moderation API**. Omni Moderation is not a CSAM detector; its `sexual/minors` category is text-only and will not identify sexual/minor content in images. Never enable image scanning for reported/suspected CSAM. Follow Discord/platform reporting and applicable law; preserve evidence only through your approved safety process, not by sending it to this service.
 - **OpenRouter:** By default BombaMod sends Nemotron the rules, category flags/scores, and bounded strike count, but **not** message text. A server admin must explicitly set `/bm privacy share_text:true` to also send best-effort-redacted flagged text. Redaction removes common mentions, identifiers, contact details and links, but is not a guarantee against personal or confidential information. OpenRouter's free model listing specifically cautions against sending personal/confidential data. Review current provider retention and privacy settings before opting in; do not use free routing for sensitive/private communities unless you accept its terms and risks.
-- **Local data:** Raw message text, images, model prompts, and message contents are never written to the BombaMod database or application logs. Stored IDs and action/category labels are still pseudonymous personal data and need an appropriate privacy notice and retention policy. Strike metadata expires on use after its configured 1–365 day window; feedback metadata expires after one year. SQLite is local and is lost if your host's filesystem is ephemeral. Backups are the operator's responsibility.
+- **Local data:** Raw message text, images, model prompts, and message contents are never written to the BombaMod database or application logs. Stored Discord IDs and action/category labels are still personal data and need an appropriate privacy notice and retention policy. Strike metadata expires on use after its configured 1–365 day window; feedback metadata is pruned on writes after its configured 1–365 day retention window. Retention is configurable with `/bm retention`. SQLite is local and is lost if your host's filesystem is ephemeral. Backups are the operator's responsibility.
 - **Actions:** Automatic actions are disabled by default. Decisions are schema-validated and bounded by server settings; bot permissions and Discord's role hierarchy are checked. Ban opt-in is separate and disabled by default. No system can guarantee correct AI actions; have moderators monitor and provide an appeal process.
 - **Prompt injection:** Member content is untrusted input. The decision prompt instructs Nemotron to treat it as data, but prompt instructions do not guarantee model behavior. Code, not the model, enforces action limits. Do not rely on AI for emergencies, threat response, self-harm support, or legal determinations.
 
@@ -87,9 +90,11 @@ All commands are under `/bm` and configuration commands require **Manage Server*
 | `DISCORD_GUILD_ID` | No | global commands | Optional development guild for fast command registration. |
 | `MAX_CONCURRENT_MODERATION` | No | `4` | Bound concurrent message processing (1–64). |
 | `HTTP_TIMEOUT_SECONDS` | No | `12` | Per-request network timeout (3–60). |
-| `MAX_IMAGE_BYTES` | No | `8000000` | Image cap (100 KB–20 MB), subject to provider support. |
+| `MAX_IMAGE_BYTES` | No | `8000000` | Total image bytes per case (100 KB–20 MB), subject to provider support. |
+| `MAX_MESSAGE_CHARS` | No | `6000` | Maximum text sent for classification; longer messages are escalated (1,000–20,000). |
 | `IMAGE_SCAN_ENABLED_BY_DEFAULT` | No | `false` | Initial per-guild image-scan setting; command can toggle per server. |
 | `ALLOW_OPENROUTER_TEXT` | No | `false` | Global hard gate for OpenRouter text; even true requires per-server `/bm privacy` opt-in. |
+| `DISABLE_OPENAI_TEXT` | No | `false` | If true, do not transmit message text to OpenAI; all cases are escalated for moderator review. |
 | `LOG_LEVEL` | No | `INFO` | Standard Python logging level. |
 
 ## Deployment
@@ -97,11 +102,15 @@ All commands are under `/bm` and configuration commands require **Manage Server*
 Run BombaMod as a **persistent worker/container**, not a short-lived serverless function: Discord's Gateway is a persistent WebSocket. The included Dockerfile runs as a non-root user, needs no inbound port and no GPU:
 
 ```bash
-docker build -t bombamod .
-docker run --env-file .env -v bombamod-data:/app/data bombamod
+cp .env.example .env
+# Edit .env and add the Discord/OpenAI/OpenRouter credentials.
+docker compose up -d --build
+docker compose logs -f bombamod
 ```
 
-For PostgreSQL, use a managed PostgreSQL URL in `DATABASE_URL` and put credentials in your host's secret manager. Make backups and test restoration. There is no automatic database migration framework yet; this initial release creates tables on startup, so back up data before future schema upgrades.
+The included [Compose file](compose.yaml) persists SQLite data in a named volume, runs read-only with dropped Linux capabilities, restarts after failures, and bounds Docker log rotation. It uses the volume-backed SQLite URL unless `DATABASE_URL` is set in `.env`, allowing an external PostgreSQL deployment. Docker secrets and host hardening remain the operator's responsibility. To shut down, run `docker compose down`; this preserves the named data volume. Back it up before removing volumes or changing database schemas.
+
+For PostgreSQL, use a managed PostgreSQL URL in `DATABASE_URL` and put credentials in your host's secret manager. Make backups and test restoration. There is no automatic database migration framework yet; this initial release creates tables on startup, so back up data before future schema upgrades. SQLite is appropriate for a single bot instance; use PostgreSQL for multi-replica or higher-availability deployments. Run only one active bot against a SQLite database.
 
 Free hosting is **best effort, not 24/7**. Providers can sleep/restart free instances, erase ephemeral filesystems, cap worker hours/outbound requests, and rate-limit APIs. The Gateway disconnect means messages sent while offline will not be scanned. Do not bypass provider sleep policies with artificial keep-alive traffic. Use an always-on plan if continuous moderation is a production requirement, and maintain native Discord AutoMod/human coverage as backup.
 

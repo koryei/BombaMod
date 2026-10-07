@@ -61,4 +61,11 @@ class CaseRegistry:
                 self._cases.pop(record.message_id, None)
 
     def get(self, message_id: int) -> CaseRecord | None:
-        return self._cases.get(message_id)
+        record = self._cases.get(message_id)
+        if record is None:
+            return None
+        cutoff = datetime.now(UTC).timestamp() - self.max_age_days * 86_400
+        if record.created_at.timestamp() < cutoff:
+            self._cases.pop(message_id, None)
+            return None
+        return record

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -28,37 +29,74 @@ class ProviderError(RuntimeError):
     """A provider request failed or returned an invalid payload."""
 
 
+async def _post_with_retry(
+    http: httpx.AsyncClient,
+    url: str,
+    *,
+    headers: dict[str, str],
+    json_body: dict[str, Any],
+) -> httpx.Response:
+    """Retry transient rate limits/server errors with capped backoff."""
+    for attempt in range(3):
+        response = await http.post(url, headers=headers, json=json_body)
+        if response.status_code not in {408, 429, 500, 502, 503, 504} or attempt == 2:
+            return response
+        retry_after = response.headers.get("retry-after", "")
+        try:
+            delay = min(max(float(retry_after), 0.0), 2.0)
+        except ValueError:
+            delay = 0.25 * (2**attempt)
+        await asyncio.sleep(delay)
+    raise AssertionError("unreachable")
+
+
 class OpenAIProvider:
     def __init__(self, api_key: str, http: httpx.AsyncClient, *, max_image_bytes: int) -> None:
         self.api_key = api_key
         self.http = http
         self.max_image_bytes = max_image_bytes
 
-    async def fetch_image_data_url(self, url: str) -> str:
+    async def fetch_image_data_url(self, url: str, *, max_bytes: int | None = None) -> str:
         """Fetch a bounded Discord CDN image and encode it for Omni Moderation."""
         parsed = urlparse(url)
-        if parsed.scheme != "https" or parsed.hostname not in _ALLOWED_IMAGE_HOSTS:
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname not in _ALLOWED_IMAGE_HOSTS
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.port not in (None, 443)
+        ):
             raise ProviderError("Image URL is not on an approved Discord CDN host")
+        size_limit = (
+            self.max_image_bytes if max_bytes is None else min(self.max_image_bytes, max_bytes)
+        )
+        if size_limit < 1:
+            raise ProviderError("Image exceeds the configured size limit")
         try:
             async with self.http.stream("GET", url, follow_redirects=False) as response:
                 response.raise_for_status()
                 media_type = response.headers.get("content-type", "").split(";", 1)[0].lower()
                 if media_type not in _ALLOWED_IMAGE_TYPES:
                     raise ProviderError("Attachment is not a supported image type")
+                response_host = urlparse(str(response.url)).hostname
+                if response_host not in _ALLOWED_IMAGE_HOSTS:
+                    raise ProviderError("Image redirect target is not an approved Discord CDN host")
                 length = response.headers.get("content-length")
-                if length is not None and int(length) > self.max_image_bytes:
+                if length is not None and int(length) > size_limit:
                     raise ProviderError("Image exceeds the configured size limit")
                 chunks: list[bytes] = []
                 size = 0
                 async for chunk in response.aiter_bytes():
                     size += len(chunk)
-                    if size > self.max_image_bytes:
+                    if size > size_limit:
                         raise ProviderError("Image exceeds the configured size limit")
                     chunks.append(chunk)
         except ProviderError:
             raise
         except (httpx.HTTPError, ValueError) as exc:
             raise ProviderError("Image download failed") from exc
+        if not chunks:
+            raise ProviderError("Image attachment was empty")
         encoded = base64.b64encode(b"".join(chunks)).decode("ascii")
         return f"data:{media_type};base64,{encoded}"
 
@@ -76,10 +114,11 @@ class OpenAIProvider:
             content = text
         body = {"model": "omni-moderation-latest", "input": content}
         try:
-            response = await self.http.post(
+            response = await _post_with_retry(
+                self.http,
                 "https://api.openai.com/v1/moderations",
                 headers={"Authorization": f"Bearer {self.api_key}"},
-                json=body,
+                json_body=body,
             )
             response.raise_for_status()
             payload = response.json()
@@ -144,7 +183,8 @@ class OpenRouterProvider:
             "response_format": {"type": "json_object"},
         }
         try:
-            response = await self.http.post(
+            response = await _post_with_retry(
+                self.http,
                 "https://openrouter.ai/api/v1/chat/completions",
                 headers={
                     "Authorization": f"Bearer {self.api_key}",
@@ -152,11 +192,13 @@ class OpenRouterProvider:
                     "HTTP-Referer": "https://github.com/bombamod/bombamod",
                     "X-Title": "BombaMod",
                 },
-                json=request,
+                json_body=request,
             )
             response.raise_for_status()
             payload = response.json()
-            choices = payload.get("choices") if isinstance(payload, dict) else None
+            if not isinstance(payload, dict):
+                raise ProviderError("OpenRouter returned an invalid response")
+            choices = payload.get("choices")
             if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
                 raise ProviderError("OpenRouter returned no decision")
             message = choices[0].get("message")

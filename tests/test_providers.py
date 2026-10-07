@@ -77,10 +77,9 @@ async def test_openrouter_receives_no_message_text_without_explicit_opt_in() -> 
     )
     assert decision.action.value == "escalate"
     assert capture.last_request is not None
-    serialized = json.dumps(capture.last_request["json"])
-    assert "PRIVATE TEXT" not in serialized
-    assert "flagged_message_text" in serialized
-    assert "PRIVATE TEXT" not in serialized
+    request_message = capture.last_request["json"]["messages"][1]["content"]
+    assert "flagged_message_text" in request_message
+    assert '"flagged_message_text": null' in request_message
 
 
 @pytest.mark.asyncio

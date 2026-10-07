@@ -33,10 +33,12 @@ class ModerationResult:
         scores_raw = result.get("category_scores")
         if not isinstance(categories_raw, dict) or not isinstance(scores_raw, dict):
             raise ValueError("Moderation result is missing categories or category_scores")
-        categories = {str(k): bool(v) for k, v in categories_raw.items()}
+        if any(not isinstance(value, bool) for value in categories_raw.values()):
+            raise ValueError("Moderation category values must be booleans")
+        categories = {str(k): value for k, value in categories_raw.items()}
         scores: dict[str, float] = {}
         for key, value in scores_raw.items():
-            if not isinstance(value, (int, float)):
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise ValueError(f"Invalid moderation score for {key}")
             score = float(value)
             if not 0 <= score <= 1:
@@ -104,37 +106,62 @@ class GuildPolicy:
 
     @classmethod
     def from_mapping(cls, guild_id: int, values: dict[str, Any]) -> GuildPolicy:
-        timeout = int(values.get("max_timeout_minutes", 1440))
+        def parse_bool(key: str, default: bool = False) -> bool:
+            value = values.get(key, default)
+            if not isinstance(value, bool):
+                raise ValueError(f"{key} must be a boolean")
+            return value
+
+        timeout_raw = values.get("max_timeout_minutes", 1440)
+        if isinstance(timeout_raw, bool) or not isinstance(timeout_raw, int):
+            raise ValueError("Maximum timeout must be an integer")
+        timeout = timeout_raw
         if not 1 <= timeout <= 40320:
             raise ValueError("Maximum timeout must be from 1 to 40320 minutes")
-        confidence = float(values.get("min_confidence", 0.80))
+        confidence_raw = values.get("min_confidence", 0.80)
+        if isinstance(confidence_raw, bool) or not isinstance(confidence_raw, (int, float)):
+            raise ValueError("Minimum confidence must be numeric")
+        confidence = float(confidence_raw)
         if not 0 <= confidence <= 1:
             raise ValueError("Minimum confidence must be from 0 to 1")
         rules = str(values.get("rules", ""))
         if len(rules) > 6000:
             raise ValueError("Rules may contain at most 6000 characters")
-        retention = int(values.get("strike_retention_days", 30))
-        feedback_retention = int(values.get("feedback_retention_days", 90))
+        retention_raw = values.get("strike_retention_days", 30)
+        feedback_retention_raw = values.get("feedback_retention_days", 90)
+        if (
+            isinstance(retention_raw, bool)
+            or not isinstance(retention_raw, int)
+            or isinstance(feedback_retention_raw, bool)
+            or not isinstance(feedback_retention_raw, int)
+        ):
+            raise ValueError("Retention periods must be integers")
+        retention = retention_raw
+        feedback_retention = feedback_retention_raw
         if not 1 <= retention <= 365 or not 1 <= feedback_retention <= 365:
             raise ValueError("Retention must be from 1 to 365 days")
         raw_channels = values.get("monitored_channel_ids", [])
         if not isinstance(raw_channels, (list, tuple)) or len(raw_channels) > 100:
             raise ValueError("At most 100 monitored channels may be configured")
         channels = tuple(sorted({int(channel) for channel in raw_channels}))
+        if any(channel <= 0 for channel in channels):
+            raise ValueError("Monitored channel IDs must be positive")
         channel = values.get("review_channel_id")
+        if channel is not None and int(channel) <= 0:
+            raise ValueError("Review channel ID must be positive")
         return cls(
             guild_id=guild_id,
             rules=rules,
             monitored_channel_ids=channels,
-            moderation_enabled=bool(values.get("moderation_enabled", False)),
-            openrouter_text_opt_in=bool(values.get("openrouter_text_opt_in", False)),
-            image_scan_enabled=bool(values.get("image_scan_enabled", False)),
-            auto_actions_enabled=bool(values.get("auto_actions_enabled", False)),
-            ban_opt_in=bool(values.get("ban_opt_in", False)),
+            moderation_enabled=parse_bool("moderation_enabled"),
+            openrouter_text_opt_in=parse_bool("openrouter_text_opt_in"),
+            image_scan_enabled=parse_bool("image_scan_enabled"),
+            auto_actions_enabled=parse_bool("auto_actions_enabled"),
+            ban_opt_in=parse_bool("ban_opt_in"),
             max_timeout_minutes=timeout,
             min_confidence=confidence,
             review_channel_id=int(channel) if channel is not None else None,
-            strikes_enabled=bool(values.get("strikes_enabled", True)),
+            strikes_enabled=parse_bool("strikes_enabled", True),
             strike_retention_days=retention,
             feedback_retention_days=feedback_retention,
         )

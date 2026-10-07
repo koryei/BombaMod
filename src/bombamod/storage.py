@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import BigInteger, DateTime, Integer, String, Text, delete, select
+from sqlalchemy import BigInteger, DateTime, Integer, String, Text, delete, func, select
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -53,10 +54,19 @@ class FeedbackRow(Base):
     moderator_id: Mapped[int] = mapped_column(BigInteger)
     message_id: Mapped[int] = mapped_column(BigInteger)
     corrected_action: Mapped[str] = mapped_column(String(32))
+    predicted_action: Mapped[str] = mapped_column(String(32))
     category_labels: Mapped[str] = mapped_column(String(500), default="")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
+
+
+@dataclass(frozen=True, slots=True)
+class FeedbackLabel:
+    predicted_action: str
+    corrected_action: str
+    category_labels: str
+    created_at: datetime
 
 
 class Store:
@@ -64,7 +74,10 @@ class Store:
 
     def __init__(self, database_url: str) -> None:
         if database_url.startswith("sqlite+"):
-            connect_args = {"check_same_thread": False}
+            connect_args = {
+                "check_same_thread": False,
+                "timeout": 20,
+            }
         else:
             connect_args = {}
         self.engine: AsyncEngine = create_async_engine(
@@ -119,9 +132,16 @@ class Store:
     async def add_strike(
         self, guild_id: int, user_id: int, categories: list[str], action: str, retention_days: int
     ) -> int:
+        if not 1 <= retention_days <= 365:
+            raise ValueError("Strike retention must be from 1 to 365 days")
         cutoff = datetime.now(UTC) - timedelta(days=retention_days)
         async with self.sessions.begin() as session:
-            await session.execute(delete(StrikeRow).where(StrikeRow.created_at < cutoff))
+            await session.execute(
+                delete(StrikeRow).where(
+                    StrikeRow.guild_id == guild_id,
+                    StrikeRow.created_at < cutoff,
+                )
+            )
             session.add(
                 StrikeRow(
                     guild_id=guild_id,
@@ -140,9 +160,16 @@ class Store:
             return len(result.scalars().all())
 
     async def strikes_for(self, guild_id: int, user_id: int, retention_days: int) -> int:
+        if not 1 <= retention_days <= 365:
+            raise ValueError("Strike query window must be from 1 to 365 days")
         cutoff = datetime.now(UTC) - timedelta(days=retention_days)
         async with self.sessions.begin() as session:
-            await session.execute(delete(StrikeRow).where(StrikeRow.created_at < cutoff))
+            await session.execute(
+                delete(StrikeRow).where(
+                    StrikeRow.guild_id == guild_id,
+                    StrikeRow.created_at < cutoff,
+                )
+            )
             result = await session.execute(
                 select(StrikeRow.id).where(
                     StrikeRow.guild_id == guild_id,
@@ -158,28 +185,70 @@ class Store:
         moderator_id: int,
         message_id: int,
         corrected_action: str,
+        predicted_action: str,
         categories: list[str],
+        retention_days: int = 90,
     ) -> None:
+        if not 1 <= retention_days <= 365:
+            raise ValueError("Feedback retention must be from 1 to 365 days")
         async with self.sessions.begin() as session:
-            cutoff = datetime.now(UTC) - timedelta(days=365)
-            await session.execute(delete(FeedbackRow).where(FeedbackRow.created_at < cutoff))
+            cutoff = datetime.now(UTC) - timedelta(days=retention_days)
+            await session.execute(
+                delete(FeedbackRow).where(
+                    FeedbackRow.guild_id == guild_id,
+                    FeedbackRow.created_at < cutoff,
+                )
+            )
             session.add(
                 FeedbackRow(
                     guild_id=guild_id,
                     moderator_id=moderator_id,
                     message_id=message_id,
                     corrected_action=corrected_action[:32],
+                    predicted_action=predicted_action[:32],
                     category_labels=",".join(categories)[:500],
                 )
             )
 
-    async def recent_feedback_count(self, guild_id: int, days: int = 30) -> int:
+    async def feedback_rows(self, guild_id: int, days: int = 90) -> list[FeedbackLabel]:
+        if not 1 <= days <= 365:
+            raise ValueError("Feedback export window must be from 1 to 365 days")
         cutoff = datetime.now(UTC) - timedelta(days=days)
-        async with self.sessions() as session:
+        async with self.sessions.begin() as session:
+            await session.execute(
+                delete(FeedbackRow).where(
+                    FeedbackRow.guild_id == guild_id,
+                    FeedbackRow.created_at < cutoff,
+                )
+            )
             result = await session.execute(
-                select(FeedbackRow.id).where(
+                select(
+                    FeedbackRow.predicted_action,
+                    FeedbackRow.corrected_action,
+                    FeedbackRow.category_labels,
+                    FeedbackRow.created_at,
+                ).where(
                     FeedbackRow.guild_id == guild_id,
                     FeedbackRow.created_at >= cutoff,
                 )
             )
-            return len(result.scalars().all())
+            return [FeedbackLabel(*row) for row in result.all()]
+
+    async def recent_feedback_count(self, guild_id: int, days: int = 30) -> int:
+        if not 1 <= days <= 365:
+            raise ValueError("Feedback query window must be from 1 to 365 days")
+        cutoff = datetime.now(UTC) - timedelta(days=days)
+        async with self.sessions.begin() as session:
+            await session.execute(
+                delete(FeedbackRow).where(
+                    FeedbackRow.guild_id == guild_id,
+                    FeedbackRow.created_at < cutoff,
+                )
+            )
+            result = await session.execute(
+                select(func.count(FeedbackRow.id)).where(
+                    FeedbackRow.guild_id == guild_id,
+                    FeedbackRow.created_at >= cutoff,
+                )
+            )
+            return int(result.scalar_one())
