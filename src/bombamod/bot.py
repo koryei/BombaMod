@@ -22,7 +22,9 @@ logger = logging.getLogger(__name__)
 
 class DiscordActionSink:
     def __init__(self, bot: BombaModBot) -> None:
-        self.bot = bot        async def apply(
+        self.bot = bot
+
+    async def apply(
         self,
         message_id: int,
         guild_id: int,
@@ -34,23 +36,19 @@ class DiscordActionSink:
         if guild is None:
             return False
         try:
-            channel = guild.get_channel(channel_id)
-            if channel is None:
-                channel = self.bot.get_channel(channel_id)
+            channel = guild.get_channel(channel_id) or self.bot.get_channel(channel_id)
             if not isinstance(channel, discord.abc.Messageable):
                 return False
             message = await channel.fetch_message(message_id)
-            if (
-                message.guild is None
-                or message.guild.id != guild_id
-                or message.author.id != user_id
-            ):
+            if message.guild is None or message.guild.id != guild_id:
+                return False
+            if message.author.id != user_id or not isinstance(message.author, discord.Member):
                 return False
             member = message.author
-            if not isinstance(member, discord.Member) or member.bot:
-                return False
             me = guild.me
-            if me is None or member.top_role >= me.top_role or member.id == guild.owner_id:
+            if me is None or member.bot or member.id == guild.owner_id:
+                return False
+            if member.top_role >= me.top_role:
                 return False
 
             if decision.action == Action.DELETE:
@@ -73,13 +71,11 @@ class DiscordActionSink:
                     timedelta(minutes=minutes),
                     reason=f"BombaMod moderation: {decision.reason[:300]}",
                 )
-                if not message.deleted and channel.permissions_for(guild.me).manage_messages:
+                if channel.permissions_for(me).manage_messages:
                     await message.delete(reason="BombaMod timed out this member")
             elif decision.action == Action.BAN:
-                if not guild.me.guild_permissions.ban_members:
+                if not me.guild_permissions.ban_members:
                     return False
-            if member.top_role >= guild.me.top_role or member.id == guild.owner_id:
-                return False
                 await guild.ban(
                     member,
                     reason=f"BombaMod moderation: {decision.reason[:300]}",
@@ -133,11 +129,6 @@ class BombaModBot(commands.Bot):
         self.cases = CaseRegistry()
         self.http = None
         self.moderation_service: ModerationService | None = None
-
-    def get_channel_for_message(self, message_id: int) -> discord.abc.Messageable | None:
-        # Message IDs do not encode the channel ID. The action sink will use guild lookup
-        # if this fast-path does not have a channel; the service records cases below.
-        return None
 
     async def setup_hook(self) -> None:
         import httpx
@@ -234,19 +225,21 @@ class BombaModBot(commands.Bot):
     async def _admin(self, interaction: discord.Interaction) -> bool:
         if interaction.guild is None or not isinstance(interaction.user, discord.Member):
             return False
-        return (
-            interaction.user.guild_permissions.administrator
-            or interaction.user.guild_permissions.manage_guild
-        )
+        permissions = interaction.user.guild_permissions
+        return permissions.administrator or permissions.manage_guild
 
     async def _moderator(self, interaction: discord.Interaction) -> bool:
         if interaction.guild is None or not isinstance(interaction.user, discord.Member):
             return False
         permissions = interaction.user.guild_permissions
-        return await self._admin(interaction) or permissions.manage_messages or permissions.moderate_members
+        return (
+            await self._admin(interaction)
+            or permissions.manage_messages
+            or permissions.moderate_members
+        )
 
     async def _require_admin(self, interaction: discord.Interaction) -> bool:
-        if await self.bot._admin(interaction):
+        if await self._admin(interaction):
             return True
         await interaction.response.send_message(
             "This setting requires Manage Server or Administrator.", ephemeral=True
@@ -371,7 +364,10 @@ class BombaModCommands(app_commands.Group):
     @app_commands.describe(
         share_text="Share redacted flagged text with OpenRouter (personal data may remain)",
         scan_images="Send eligible image attachments to OpenAI Omni Moderation",
-    )    async def privacy(self, interaction: discord.Interaction, share_text: bool, scan_images: bool) -> None:
+    )
+    async def privacy(
+        self, interaction: discord.Interaction, share_text: bool, scan_images: bool
+    ) -> None:
         if not await self.bot._require_admin(interaction):
             return
         if interaction.guild_id is None:
