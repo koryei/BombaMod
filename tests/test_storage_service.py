@@ -31,12 +31,21 @@ class FakeAlerts:
     def __init__(self) -> None:
         self.messages: list[str] = []
 
-    async def alert(self, guild_id: int, channel_id: int, reason: str) -> None:
+    async def alert(
+        self, guild_id: int, channel_id: int, reason: str, case_url: str | None = None
+    ) -> None:
         self.messages.append(reason)
 
 
 class FakeActions:
-    async def apply(self, message_id: int, guild_id: int, user_id: int, decision: Decision) -> bool:
+    async def apply(
+        self,
+        message_id: int,
+        guild_id: int,
+        channel_id: int,
+        user_id: int,
+        decision: Decision,
+    ) -> bool:
         raise AssertionError("No action may run after provider failure")
 
 

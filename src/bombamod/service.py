@@ -176,7 +176,7 @@ class ModerationService:
                             policy,
                             guild_id,
                             channel_id,
-                            "Discord action failed (permission or role hierarchy); moderator review required.",
+                            "Discord action failed (permission or role hierarchy); review required.",
                             message_id=message_id,
                         )
 

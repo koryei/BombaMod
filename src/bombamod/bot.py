@@ -61,7 +61,7 @@ class DiscordActionSink:
                 if not channel.permissions_for(me).send_messages:
                     return False
                 await channel.send(
-                    f"{member.mention} Please review the server rules. If you believe this was a mistake, contact a moderator.",
+                    f"{member.mention} Please review the server rules. Contact a moderator if this is a mistake.",
                     delete_after=20,
                     allowed_mentions=discord.AllowedMentions(users=True),
                 )
@@ -78,8 +78,8 @@ class DiscordActionSink:
             elif decision.action == Action.BAN:
                 if not guild.me.guild_permissions.ban_members:
                     return False
-                if member.top_role >= guild.me.top_role or member.id == guild.owner_id:
-                    return False
+            if member.top_role >= guild.me.top_role or member.id == guild.owner_id:
+                return False
                 await guild.ban(
                     member,
                     reason=f"BombaMod moderation: {decision.reason[:300]}",
@@ -301,7 +301,7 @@ class BombaModCommands(app_commands.Group):
             monitored_channel_ids=channel_ids,
         )
         await interaction.response.send_message(
-            "BombaMod is enabled. Add policy with `/bm rules`; automatic actions, image scanning, and OpenRouter text sharing remain off until separately enabled.",
+            "BombaMod is enabled. Add `/bm rules`. Actions, image scans, and OpenRouter text sharing are off until enabled.",
             ephemeral=True,
         )
 
@@ -328,7 +328,7 @@ class BombaModCommands(app_commands.Group):
             return
         await self.bot.store.update_policy(interaction.guild_id, rules=text.strip())
         await interaction.response.send_message(
-            "Policy saved. This supplies context to the AI at decision time; it does not train or update model weights.",
+            "Policy saved as decision context; this does not train or update model weights.",
             ephemeral=True,
         )
 
@@ -360,8 +360,8 @@ class BombaModCommands(app_commands.Group):
             ban_opt_in=allow_bans,
         )
         await interaction.response.send_message(
-            f"Automatic actions {'enabled' if enabled else 'disabled'}; max timeout {max_timeout_minutes} minutes; "
-            f"minimum confidence {min_confidence:.2f}; bans {'explicitly enabled' if allow_bans else 'disabled'}.",
+            f"Actions {'enabled' if enabled else 'disabled'}; max timeout {max_timeout_minutes} min; "
+            f"confidence {min_confidence:.2f}; bans {'on' if allow_bans else 'off'}.",
             ephemeral=True,
         )
 
@@ -369,7 +369,7 @@ class BombaModCommands(app_commands.Group):
         name="privacy", description="Opt in to optional model text/image processing"
     )
     @app_commands.describe(
-        share_text="Send best-effort-redacted flagged text to OpenRouter (residual personal data may remain)",
+        share_text="Share redacted flagged text with OpenRouter (personal data may remain)",
         scan_images="Send eligible image attachments to OpenAI Omni Moderation",
     )    async def privacy(self, interaction: discord.Interaction, share_text: bool, scan_images: bool) -> None:
         if not await self.bot._require_admin(interaction):
@@ -385,8 +385,8 @@ class BombaModCommands(app_commands.Group):
         text_state = "enabled" if share_text else "disabled"
         image_state = "enabled" if scan_images else "disabled"
         await interaction.response.send_message(
-            f"OpenRouter flagged-text sharing: {text_state}. Best-effort redaction is not guaranteed to remove all personal data. "
-            f"OpenAI image scanning: {image_state}. Never send known or suspected CSAM; the API is not a child-safety detector.",
+            f"OpenRouter text sharing: {text_state}; redaction may miss personal data. "
+            f"OpenAI image scans: {image_state}. Never send suspected CSAM; this is not a CSAM detector.",
             ephemeral=True,
         )
 
@@ -436,7 +436,7 @@ class BombaModCommands(app_commands.Group):
         case = self.bot.cases.get(int(message_id))
         if case is None or case.guild_id != interaction.guild_id:
             await interaction.response.send_message(
-                "Case metadata is unavailable (cases are memory-only and expire on restart). Feedback was not saved.",
+                "Case metadata expired or unavailable after restart. Feedback was not saved.",
                 ephemeral=True,
             )
             return
@@ -449,7 +449,7 @@ class BombaModCommands(app_commands.Group):
             list(case.categories),
         )
         await interaction.response.send_message(
-            "Feedback label saved without message text. It supports offline evaluation, not automatic model training.",
+            "Label saved without text for offline evaluation, not automatic model training.",
             ephemeral=True,
         )
 
