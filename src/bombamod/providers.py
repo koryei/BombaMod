@@ -213,5 +213,10 @@ class OpenRouterProvider:
         except ProviderError:
             raise
         except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError) as exc:
-            logger.warning("OpenRouter decision request failed or was invalid")
+            status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+            logger.warning(
+                "OpenRouter decision request failed or was invalid (model=%s status=%s)",
+                self.model,
+                status,
+            )
             raise ProviderError("OpenRouter decision request failed") from exc
