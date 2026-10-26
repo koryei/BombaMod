@@ -156,3 +156,27 @@ async def test_decide_models_use_the_decisions_api() -> None:
     assert decision.confidence == 0.99
     assert capture.last_request is not None
     assert capture.last_request["url"] == "https://openrouter.ai/api/alpha/decisions"
+
+
+@pytest.mark.asyncio
+async def test_official_inception_uses_its_own_decisions_url() -> None:
+    capture = CaptureHTTP(
+        {"answers": {"action": {"type": "choice", "choice": "allow", "confidence": 0.9}}}
+    )
+    provider = OpenRouterProvider(
+        "secret",
+        "mercury-decide",
+        capture,
+        "https://api.inceptionlabs.ai/v1",  # type: ignore[arg-type]
+    )
+    decision = await provider.decide(
+        rules="Be kind",
+        categories={"hate": True},
+        scores={"hate": 0.6},
+        message_text=None,
+        strike_count=0,
+        minimum_confidence=0.8,
+    )
+    assert decision.action.value == "allow"
+    assert capture.last_request is not None
+    assert capture.last_request["url"] == "https://api.inceptionlabs.ai/v1/decisions"

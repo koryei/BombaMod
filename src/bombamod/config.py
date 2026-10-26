@@ -25,6 +25,11 @@ def _integer(name: str, default: int, *, minimum: int, maximum: int) -> int:
     return value
 
 
+def _decision_env(name: str, legacy_name: str, *, default: str = "") -> str:
+    """Read a decision-provider setting, falling back to its legacy OPENROUTER_* name."""
+    return (os.getenv(name) or os.getenv(legacy_name) or default).strip()
+
+
 def _boolean(name: str, default: bool) -> bool:
     raw = os.getenv(name)
     if raw is None:
@@ -61,13 +66,13 @@ class Settings:
         load_dotenv()
         discord_token = os.getenv("DISCORD_TOKEN", "").strip()
         openai_api_key = os.getenv("OPENAI_API_KEY", "").strip()
-        openrouter_api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+        openrouter_api_key = _decision_env("DECISION_API_KEY", "OPENROUTER_API_KEY")
         missing = [
             name
             for name, value in (
                 ("DISCORD_TOKEN", discord_token),
                 ("OPENAI_API_KEY", openai_api_key),
-                ("OPENROUTER_API_KEY", openrouter_api_key),
+                ("DECISION_API_KEY", openrouter_api_key),
             )
             if not value
         ]
@@ -76,13 +81,17 @@ class Settings:
                 f"Missing required environment variables: {', '.join(missing)}"
             )
 
-        model = os.getenv("OPENROUTER_MODEL", "inception/mercury-decide:free").strip()
+        model = _decision_env(
+            "DECISION_MODEL", "OPENROUTER_MODEL", default="inception/mercury-decide:free"
+        )
         if not model:
-            raise ConfigurationError("OPENROUTER_MODEL cannot be empty")
+            raise ConfigurationError("DECISION_MODEL cannot be empty")
 
-        base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").strip()
+        base_url = _decision_env(
+            "DECISION_BASE_URL", "OPENROUTER_BASE_URL", default="https://openrouter.ai/api/v1"
+        )
         if not base_url.startswith("https://"):
-            raise ConfigurationError("OPENROUTER_BASE_URL must start with https://")
+            raise ConfigurationError("DECISION_BASE_URL must start with https://")
 
         raw_guild_id = os.getenv("DISCORD_GUILD_ID", "").strip()
         try:

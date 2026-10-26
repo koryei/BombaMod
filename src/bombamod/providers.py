@@ -145,7 +145,10 @@ class OpenRouterProvider:
         self.http = http
         # Any OpenAI-compatible chat API works here (OpenRouter, Groq, ...).
         self.url = base_url.rstrip("/") + "/chat/completions"
-        self.decisions_url = base_url.rstrip("/").removesuffix("/v1") + "/alpha/decisions"
+        if "inceptionlabs.ai" in base_url:
+            self.decisions_url = base_url.rstrip("/") + "/decisions"
+        else:
+            self.decisions_url = base_url.rstrip("/").removesuffix("/v1") + "/alpha/decisions"
         # Decision models (Mercury Decide, Jev) use a structured API instead of chat completions.
         self.structured = any(tag in model.lower() for tag in ("decide", "jev"))
 
