@@ -237,6 +237,8 @@ class BombaModBot(commands.Bot):
             maxsize=max(64, settings.max_concurrent_moderation * 32)
         )
         self._worker_tasks: list[asyncio.Task[None]] = []
+        self._commands_scope = "global"
+        self._commands_pruned = False
         self._pending_alerts: dict[int, list[tuple[str, str | None]]] = {}
         self._alert_channels: dict[int, int] = {}
         self._alert_tasks: dict[int, asyncio.Task[None]] = {}
@@ -296,6 +298,7 @@ class BombaModBot(commands.Bot):
             self.tree.copy_global_to(guild=guild_object)
             try:
                 await self.tree.sync(guild=guild_object)
+                self._commands_scope = "guild"
                 return
             except discord.Forbidden:
                 logger.error(
@@ -477,8 +480,28 @@ class BombaModBot(commands.Bot):
         if has_pending and guild_id not in self._alert_tasks:
             self._alert_tasks[guild_id] = asyncio.create_task(self._flush_alerts(guild_id))
 
+    async def _prune_duplicate_commands(self) -> None:
+        """Commands registered both globally and per-server appear twice; keep one scope."""
+        try:
+            if self._commands_scope == "guild":
+                if await self.tree.fetch_commands():
+                    self.tree.clear_commands(guild=None)
+                    await self.tree.sync()
+                    logger.info("Removed global slash commands that duplicated the dev-guild ones")
+                return
+            for guild in self.guilds:
+                if await self.tree.fetch_commands(guild=guild):
+                    self.tree.clear_commands(guild=guild)
+                    await self.tree.sync(guild=guild)
+                    logger.info("Removed duplicate server-specific commands in guild %s", guild.id)
+        except discord.HTTPException:
+            logger.warning("Could not check for duplicate slash commands")
+
     async def on_ready(self) -> None:
         logger.info("BombaMod connected (guilds=%s)", len(self.guilds))
+        if not self._commands_pruned:
+            self._commands_pruned = True
+            await self._prune_duplicate_commands()
         for guild_id in set(self._pending_alerts) | set(self._dropped_alert_counts):
             self._start_alert_flush(guild_id)
 

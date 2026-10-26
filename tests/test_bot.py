@@ -326,3 +326,68 @@ async def test_bad_guild_id_falls_back_to_global_sync(settings: Settings, monkey
     await bot._sync_commands()
 
     assert len(calls) == 2 and calls[0] is not None and calls[1] is None
+
+
+@pytest.mark.asyncio
+async def test_global_mode_removes_leftover_guild_commands(settings: Settings, monkeypatch) -> None:
+    bot = BombaModBot(settings, DummyStore())  # type: ignore[arg-type]
+    stale, clean = MagicMock(spec=discord.Guild), MagicMock(spec=discord.Guild)
+    stale.id, clean.id = 1, 2
+    monkeypatch.setattr(BombaModBot, "guilds", property(lambda self: [stale, clean]))
+    monkeypatch.setattr(
+        bot.tree,
+        "fetch_commands",
+        AsyncMock(side_effect=lambda guild=None: [object()] if guild is stale else []),
+    )
+    synced: list[object] = []
+
+    async def fake_sync(*, guild: object = None) -> list[object]:
+        synced.append(guild)
+        return []
+
+    monkeypatch.setattr(bot.tree, "sync", fake_sync)
+
+    await bot._prune_duplicate_commands()
+
+    assert synced == [stale]
+
+
+@pytest.mark.asyncio
+async def test_guild_mode_removes_leftover_global_commands(settings: Settings, monkeypatch) -> None:
+    bot = BombaModBot(settings, DummyStore())  # type: ignore[arg-type]
+    bot._commands_scope = "guild"
+    monkeypatch.setattr(bot.tree, "fetch_commands", AsyncMock(return_value=[object()]))
+    synced: list[object] = []
+
+    async def fake_sync(*, guild: object = None) -> list[object]:
+        synced.append(guild)
+        return []
+
+    monkeypatch.setattr(bot.tree, "sync", fake_sync)
+
+    await bot._prune_duplicate_commands()
+
+    assert synced == [None]
+
+
+@pytest.mark.asyncio
+async def test_fallback_to_global_keeps_global_commands(settings: Settings, monkeypatch) -> None:
+    from dataclasses import replace
+
+    bot = BombaModBot(replace(settings, discord_guild_id=123), DummyStore())  # type: ignore[arg-type]
+    response = SimpleNamespace(status=403, reason="forbidden", text="", headers={})
+
+    async def fake_sync(*, guild: object = None) -> list[object]:
+        if guild is not None:
+            raise discord.Forbidden(response, "Missing Access")
+        return []
+
+    monkeypatch.setattr(bot.tree, "sync", fake_sync)
+    fetch = AsyncMock(return_value=[object()])
+    monkeypatch.setattr(bot.tree, "fetch_commands", fetch)
+    monkeypatch.setattr(BombaModBot, "guilds", property(lambda self: []))
+
+    await bot._sync_commands()
+    await bot._prune_duplicate_commands()
+
+    assert bot._commands_scope == "global"
