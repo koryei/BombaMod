@@ -4,9 +4,33 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from bombamod.schemas import Action, Decision, GuildPolicy
+from bombamod.schemas import Action, Decision, GuildPolicy, ModerationResult
 
 MAX_ABSOLUTE_TIMEOUT_MINUTES = 40_320  # Discord's 28-day timeout ceiling.
+
+# Plain insults ("harassment") and profanity are treated as banter and never punished.
+# Only these categories can trigger an action, each with a short user-facing description.
+SEVERE_CATEGORIES: dict[str, str] = {
+    "hate": "hateful content",
+    "hate/threatening": "hateful threats",
+    "harassment/threatening": "threats",
+    "self-harm": "encouraging self-harm",
+    "self-harm/intent": "encouraging self-harm",
+    "self-harm/instructions": "encouraging self-harm",
+    "violence": "threats of violence",
+    "violence/graphic": "graphic violence",
+    "sexual/minors": "sexual content involving minors",
+    "illicit/violent": "violent illicit content",
+}
+
+
+def severe_reasons(result: ModerationResult) -> list[str]:
+    """Return de-duplicated, user-facing descriptions of the severe categories that were flagged."""
+    reasons: list[str] = []
+    for category, description in SEVERE_CATEGORIES.items():
+        if result.categories.get(category) and description not in reasons:
+            reasons.append(description)
+    return reasons
 
 
 def constrain_decision(decision: Decision, policy: GuildPolicy) -> Decision:

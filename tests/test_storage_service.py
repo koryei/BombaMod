@@ -14,7 +14,7 @@ from bombamod.storage import Store
 
 class FakeOpenAI:
     def __init__(self, result: ModerationResult | None = None) -> None:
-        self.result = result or ModerationResult(True, {"harassment": True}, {"harassment": 0.99})
+        self.result = result or ModerationResult(True, {"hate": True}, {"hate": 0.99})
         self.image_fetches = 0
         self.moderated_text: list[str] = []
         self.moderated_images: list[list[str]] = []
@@ -286,4 +286,52 @@ async def test_image_fetch_is_never_called_without_guild_opt_in(tmp_path: Path) 
         image_urls=["https://cdn.discordapp.com/image.png"],
     )
     assert openai.image_fetches == 0
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_roasting_is_allowed_without_review_or_model_call(tmp_path: Path) -> None:
+    store = Store(f"sqlite+aiosqlite:///{tmp_path / 'roast.db'}")
+    await store.initialize()
+    await store.update_policy(
+        5, moderation_enabled=True, review_channel_id=99, rules="Be kind", auto_actions_enabled=True
+    )
+    router = FakeOpenRouter()
+    alerts = FakeAlerts()
+    actions = FakeActions()
+    roast = ModerationResult(True, {"harassment": True}, {"harassment": 0.97})
+    service = make_service(store, FakeOpenAI(roast), router, alerts, actions)
+    result = await service.moderate(
+        guild_id=5, channel_id=2, message_id=50, user_id=4, content="you suck at this game lol"
+    )
+    assert result.decision.action is Action.ALLOW
+    assert not router.calls
+    assert not alerts.messages
+    assert actions.calls == 0
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_identical_spam_reuses_the_first_decision(tmp_path: Path) -> None:
+    store = Store(f"sqlite+aiosqlite:///{tmp_path / 'spam.db'}")
+    await store.initialize()
+    await store.update_policy(
+        6, moderation_enabled=True, review_channel_id=99, rules="No hate", auto_actions_enabled=True
+    )
+    openai = FakeOpenAI()
+    router = FakeOpenRouter(Decision(Action.DELETE, "violation", confidence=0.99))
+    actions = FakeActions()
+    service = make_service(store, openai, router, FakeAlerts(), actions)
+    for message_id in range(60, 70):
+        result = await service.moderate(
+            guild_id=6,
+            channel_id=2,
+            message_id=message_id,
+            user_id=4,
+            content="Kill  ur SELF" if message_id % 2 else "kill ur self",
+        )
+        assert result.decision.action is Action.DELETE
+    assert len(openai.moderated_text) == 1
+    assert len(router.calls) == 1
+    assert actions.calls == 10
     await store.close()

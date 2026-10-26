@@ -3,17 +3,23 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import time
 from dataclasses import dataclass
 from typing import Protocol
 
-from bombamod.enforcement import require_admin_opt_in
+from bombamod.enforcement import require_admin_opt_in, severe_reasons
 from bombamod.moderator import CaseRegistry
 from bombamod.providers import OpenAIProvider, OpenRouterProvider, ProviderError
 from bombamod.schemas import Action, Decision, GuildPolicy, ModerationResult
 from bombamod.storage import Store
 
 logger = logging.getLogger(__name__)
+
+# Identical spam from one user reuses the first decision instead of re-calling the providers.
+RECENT_DECISION_TTL_SECONDS = 120
+RECENT_DECISION_MAX = 2000
 
 
 class AlertSink(Protocol):
@@ -72,6 +78,7 @@ class ModerationService:
         self.max_message_chars = max_message_chars
         self.max_image_bytes = max_image_bytes
         self.case_registry = case_registry
+        self._recent: dict[tuple[int, int, str], tuple[float, Decision]] = {}
 
     async def moderate(
         self,
@@ -91,6 +98,17 @@ class ModerationService:
             )
         if policy.monitored_channel_ids and channel_id not in policy.monitored_channel_ids:
             return CaseOutcome(None, Decision(Action.ALLOW, "Channel is not monitored."))
+
+        cache_key = None if image_urls else self._cache_key(guild_id, user_id, content)
+        if cache_key is not None:
+            cached = self._cached_decision(cache_key)
+            if cached is not None and cached.action == Action.ALLOW:
+                return CaseOutcome(None, cached)
+            if cached is not None and policy.auto_actions_enabled:
+                if await self._apply(
+                    message_id, guild_id, channel_id, user_id, source_fingerprint, cached
+                ):
+                    return CaseOutcome(None, cached)
 
         async with self.semaphore:
             try:
@@ -167,6 +185,7 @@ class ModerationService:
                 if not result.flagged:
                     decision = Decision(Action.ALLOW, "No moderation category was flagged.")
                     self._register_case(message_id, guild_id, channel_id, user_id, result, decision)
+                    self._remember(cache_key, decision)
                     logger.info("Moderated message in guild %s: not flagged", guild_id)
                     return CaseOutcome(result, decision)
                 if not any(result.categories.values()):
@@ -182,6 +201,14 @@ class ModerationService:
                         "Classifier flagged content without category details; review required.",
                         message_id=message_id,
                     )
+                    return CaseOutcome(result, decision)
+
+                if not severe_reasons(result):
+                    # Roasting and ordinary insults are banter: no action and no review ping.
+                    decision = Decision(Action.ALLOW, "Banter or low-severity language.")
+                    self._register_case(message_id, guild_id, channel_id, user_id, result, decision)
+                    self._remember(cache_key, decision)
+                    logger.info("Moderated message in guild %s: banter, allowed", guild_id)
                     return CaseOutcome(result, decision)
 
                 if not policy.rules.strip():
@@ -223,6 +250,8 @@ class ModerationService:
                         confidence=decision.confidence,
                     )
                 self._register_case(message_id, guild_id, channel_id, user_id, result, decision)
+                if decision.action == Action.ALLOW:
+                    self._remember(cache_key, decision)
                 if policy.strikes_enabled and decision.action not in {
                     Action.ALLOW,
                     Action.ESCALATE,
@@ -251,15 +280,12 @@ class ModerationService:
                         message_id=message_id,
                     )
                 elif decision.action != Action.ALLOW:
-                    applied = await self.actions.apply(
-                        message_id,
-                        guild_id,
-                        channel_id,
-                        user_id,
-                        source_fingerprint,
-                        decision,
+                    applied = await self._apply(
+                        message_id, guild_id, channel_id, user_id, source_fingerprint, decision
                     )
-                    if not applied:
+                    if applied:
+                        self._remember(cache_key, decision)
+                    else:
                         await self._alert(
                             policy,
                             guild_id,
@@ -298,6 +324,46 @@ class ModerationService:
                     provider_failed=True,
                 )
 
+    async def _apply(
+        self,
+        message_id: int,
+        guild_id: int,
+        channel_id: int,
+        user_id: int,
+        source_fingerprint: str,
+        decision: Decision,
+    ) -> bool:
+        return await self.actions.apply(
+            message_id, guild_id, channel_id, user_id, source_fingerprint, decision
+        )
+
+    @staticmethod
+    def _cache_key(guild_id: int, user_id: int, content: str) -> tuple[int, int, str] | None:
+        normalized = " ".join(content.lower().split())
+        if not normalized:
+            return None
+        return guild_id, user_id, hashlib.sha256(normalized.encode()).hexdigest()
+
+    def _cached_decision(self, key: tuple[int, int, str]) -> Decision | None:
+        entry = self._recent.get(key)
+        if entry is None:
+            return None
+        expires, decision = entry
+        if expires < time.monotonic():
+            del self._recent[key]
+            return None
+        return decision
+
+    def _remember(self, key: tuple[int, int, str] | None, decision: Decision) -> None:
+        if key is None:
+            return
+        now = time.monotonic()
+        if len(self._recent) >= RECENT_DECISION_MAX:
+            self._recent = {k: v for k, v in self._recent.items() if v[0] >= now}
+            if len(self._recent) >= RECENT_DECISION_MAX:
+                self._recent.pop(next(iter(self._recent)))
+        self._recent[key] = (now + RECENT_DECISION_TTL_SECONDS, decision)
+
     def _register_case(
         self,
         message_id: int,
@@ -319,12 +385,15 @@ class ModerationService:
 
     @staticmethod
     def _sanitize_decision(decision: Decision, result: ModerationResult) -> Decision:
-        """Never trust generated reasons for audit logs: they may quote the source message."""
-        categories = [name for name, flagged in result.categories.items() if flagged][:5]
-        summary = ", ".join(categories) or "moderation signals"
+        """Replace model-written reasons with a category summary; they may quote the message."""
+        reasons = (
+            severe_reasons(result)
+            or [name for name, flagged in result.categories.items() if flagged][:5]
+        )
+        summary = ", ".join(reasons) or "moderation signals"
         return Decision(
             action=decision.action,
-            reason=f"Nemotron recommended {decision.action.value} based on {summary}.",
+            reason=f"flagged for {summary}",
             timeout_minutes=decision.timeout_minutes,
             confidence=decision.confidence,
         )

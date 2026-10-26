@@ -7,6 +7,7 @@ import csv
 import hashlib
 import io
 import logging
+import time
 from datetime import timedelta
 
 import discord
@@ -26,11 +27,18 @@ logger = logging.getLogger(__name__)
 # Collect review alerts for this long so a spammer produces one digest, not a flood.
 ALERT_BATCH_SECONDS = 20
 MAX_PENDING_ALERTS = 200
+# Deletes arriving within this window are sent to Discord as one bulk delete.
+DELETE_BATCH_SECONDS = 0.4
+# A user gets at most one moderation DM per cooldown, however much they spam.
+DM_COOLDOWN_SECONDS = 60
 
 
 class DiscordActionSink:
     def __init__(self, bot: BombaModBot) -> None:
         self.bot = bot
+        self._delete_queues: dict[int, list[tuple[discord.Message, asyncio.Future[bool]]]] = {}
+        self._background: set[asyncio.Task[None]] = set()
+        self._dm_sent: dict[tuple[int, int], float] = {}
 
     async def apply(
         self,
@@ -62,7 +70,10 @@ class DiscordActionSink:
             )
             if not isinstance(channel, discord.abc.Messageable):
                 return False
-            message = await channel.fetch_message(message_id)
+            # The gateway cache avoids one REST call per message during a spam burst.
+            message = discord.utils.get(self.bot.cached_messages, id=message_id)
+            if message is None:
+                message = await channel.fetch_message(message_id)
             if message.guild is None or message.guild.id != guild_id:
                 return False
             if message.author.id != user_id or not isinstance(message.author, discord.Member):
@@ -79,7 +90,9 @@ class DiscordActionSink:
             if decision.action == Action.DELETE:
                 if not channel.permissions_for(me).manage_messages:
                     return False
-                await message.delete()
+                if not await self._delete(channel, message):
+                    return False
+                await self._notify(guild, member, decision, "Your message was removed")
             elif decision.action == Action.WARN:
                 if not channel.permissions_for(me).send_messages:
                     return False
@@ -94,17 +107,22 @@ class DiscordActionSink:
                 if not me.guild_permissions.moderate_members:
                     return False
                 minutes = min(max(decision.timeout_minutes, 1), 40_320)
-                await member.timeout(
-                    timedelta(minutes=minutes),
-                    reason=f"BombaMod moderation: {decision.reason[:300]}",
-                )
+                if not member.is_timed_out():
+                    await member.timeout(
+                        timedelta(minutes=minutes),
+                        reason=f"BombaMod moderation: {decision.reason[:300]}",
+                    )
+                    await self._notify(
+                        guild, member, decision, f"You were timed out for {minutes} minutes"
+                    )
                 if channel.permissions_for(me).manage_messages:
-                    await message.delete()
+                    await self._delete(channel, message)
             elif decision.action == Action.BAN:
                 if member.guild_permissions.administrator:
                     return False
                 if not me.guild_permissions.ban_members:
                     return False
+                await self._notify(guild, member, decision, "You were banned")
                 await guild.ban(
                     member,
                     reason=f"BombaMod moderation: {decision.reason[:300]}",
@@ -126,6 +144,65 @@ class DiscordActionSink:
         except (discord.Forbidden, discord.NotFound, discord.HTTPException, AttributeError):
             return False
 
+    async def _delete(self, channel: discord.abc.Messageable, message: discord.Message) -> bool:
+        """Queue a delete; deletes landing in the same window share one bulk request."""
+        if not isinstance(channel, (discord.TextChannel, discord.Thread)):
+            await message.delete()
+            return True
+        queue = self._delete_queues.setdefault(channel.id, [])
+        future: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+        queue.append((message, future))
+        if len(queue) == 1:
+            task = asyncio.create_task(self._flush_deletes(channel))
+            self._background.add(task)
+            task.add_done_callback(self._background.discard)
+        return await future
+
+    async def _flush_deletes(self, channel: discord.TextChannel | discord.Thread) -> None:
+        await asyncio.sleep(DELETE_BATCH_SECONDS)
+        batch = self._delete_queues.pop(channel.id, [])
+        messages = [message for message, _ in batch]
+        results = [False] * len(batch)
+        try:
+            if len(messages) == 1:
+                await messages[0].delete()
+            else:
+                await channel.delete_messages(messages)
+            results = [True] * len(batch)
+        except discord.HTTPException:
+            # A bulk delete is all-or-nothing; fall back so one stale message cannot block the rest.
+            for index, message in enumerate(messages):
+                try:
+                    await message.delete()
+                    results[index] = True
+                except discord.HTTPException:
+                    logger.info("Could not delete a flagged message")
+        finally:
+            for (_, future), ok in zip(batch, results, strict=True):
+                if not future.done():
+                    future.set_result(ok)
+
+    async def _notify(
+        self, guild: discord.Guild, member: discord.Member, decision: Decision, headline: str
+    ) -> None:
+        """Send the punished member one short DM explaining why (rate-limited per user)."""
+        now = time.monotonic()
+        key = (guild.id, member.id)
+        if self._dm_sent.get(key, 0.0) + DM_COOLDOWN_SECONDS > now:
+            return
+        if len(self._dm_sent) > 1000:
+            self._dm_sent = {
+                k: t for k, t in self._dm_sent.items() if t + DM_COOLDOWN_SECONDS > now
+            }
+        self._dm_sent[key] = now
+        try:
+            await member.send(
+                f"{headline} in **{guild.name}** ({decision.reason}). "
+                "If you think this was a mistake, please contact a moderator."
+            )
+        except discord.HTTPException:
+            logger.info("Could not DM a moderated member (DMs closed)")
+
     async def _audit(
         self,
         guild: discord.Guild,
@@ -134,22 +211,14 @@ class DiscordActionSink:
         *,
         case_url: str,
     ) -> None:
+        """Queue an audit line; the alert digest collapses spam into one counted message."""
         policy = await self.bot.store.policy(guild.id)
-        channel = guild.get_channel(policy.review_channel_id) if policy.review_channel_id else None
-        if isinstance(channel, discord.TextChannel) and self.bot._is_private_review_channel(
-            guild, channel
-        ):
-            await channel.send(
-                f"BombaMod action: **{decision.action.value}** for <@{member.id}>. "
-                f"Reason: {decision.reason[:300]}. Case: <{case_url}>",
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
-        else:
-            await self.bot.alert(
-                guild.id,
-                policy.review_channel_id or 0,
-                f"Action {decision.action.value} completed for member ID {member.id}.",
-            )
+        await self.bot.alert(
+            guild.id,
+            policy.review_channel_id or 0,
+            f"BombaMod {decision.action.value} on <@{member.id}>: {decision.reason[:200]}",
+            case_url,
+        )
 
 
 class BombaModBot(commands.Bot):
@@ -165,7 +234,7 @@ class BombaModBot(commands.Bot):
         self.provider_http: httpx.AsyncClient | None = None
         self.moderation_service: ModerationService | None = None
         self._moderation_queue: asyncio.Queue[tuple[discord.Message, str]] = asyncio.Queue(
-            maxsize=max(8, settings.max_concurrent_moderation * 4)
+            maxsize=max(64, settings.max_concurrent_moderation * 32)
         )
         self._worker_tasks: list[asyncio.Task[None]] = []
         self._pending_alerts: dict[int, list[tuple[str, str | None]]] = {}
@@ -424,7 +493,9 @@ class BombaModBot(commands.Bot):
             return
         policy = await self.store.policy(message.guild.id)
         if not policy.moderation_enabled:
-            logger.info("Ignored message in guild %s: moderation not enabled (/bm setup)", message.guild.id)
+            logger.info(
+                "Ignored message in guild %s: moderation not enabled (/bm setup)", message.guild.id
+            )
             return
         if policy.monitored_channel_ids and message.channel.id not in policy.monitored_channel_ids:
             logger.info("Ignored message in guild %s: channel not monitored", message.guild.id)

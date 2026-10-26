@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import discord
 import pytest
 
-from bombamod.bot import BombaModBot, BombaModCommands, install_commands
+from bombamod.bot import BombaModBot, BombaModCommands, DiscordActionSink, install_commands
 from bombamod.config import Settings
 from bombamod.schemas import Action, Decision, ModerationResult
 
@@ -232,3 +233,75 @@ async def test_alert_refuses_public_channel(settings: Settings, monkeypatch) -> 
     channel.send.assert_awaited_once()
     assert 12 not in bot._pending_alerts
     assert 12 not in bot._alert_tasks
+
+
+@pytest.mark.asyncio
+async def test_spam_deletes_share_one_bulk_request(settings: Settings, monkeypatch) -> None:
+    bot = BombaModBot(settings, DummyStore())  # type: ignore[arg-type]
+    sink = DiscordActionSink(bot)
+    monkeypatch.setattr("bombamod.bot.DELETE_BATCH_SECONDS", 0)
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.id = 5
+    channel.delete_messages = AsyncMock()
+    messages = [MagicMock(spec=discord.Message) for _ in range(8)]
+
+    results = await asyncio.gather(*(sink._delete(channel, m) for m in messages))
+
+    assert all(results)
+    channel.delete_messages.assert_awaited_once()
+    assert len(channel.delete_messages.await_args.args[0]) == 8
+    for message in messages:
+        message.delete.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_failed_bulk_delete_falls_back_to_single_deletes(
+    settings: Settings, monkeypatch
+) -> None:
+    bot = BombaModBot(settings, DummyStore())  # type: ignore[arg-type]
+    sink = DiscordActionSink(bot)
+    monkeypatch.setattr("bombamod.bot.DELETE_BATCH_SECONDS", 0)
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.id = 5
+    response = SimpleNamespace(status=404, reason="missing", text="", headers={})
+    channel.delete_messages = AsyncMock(side_effect=discord.NotFound(response, "gone"))
+    first, second = MagicMock(spec=discord.Message), MagicMock(spec=discord.Message)
+    first.delete = AsyncMock(side_effect=discord.NotFound(response, "gone"))
+    second.delete = AsyncMock()
+
+    results = await asyncio.gather(sink._delete(channel, first), sink._delete(channel, second))
+
+    assert results == [False, True]
+
+
+@pytest.mark.asyncio
+async def test_punished_user_gets_one_dm_per_cooldown(settings: Settings) -> None:
+    bot = BombaModBot(settings, DummyStore())  # type: ignore[arg-type]
+    sink = DiscordActionSink(bot)
+    guild = MagicMock(spec=discord.Guild)
+    guild.id, guild.name = 1, "Test Server"
+    member = MagicMock(spec=discord.Member)
+    member.id = 2
+    member.send = AsyncMock()
+    decision = Decision(Action.DELETE, "flagged for hateful content", confidence=0.99)
+
+    for _ in range(5):
+        await sink._notify(guild, member, decision, "Your message was removed")
+
+    member.send.assert_awaited_once()
+    text = member.send.await_args.args[0]
+    assert "Test Server" in text and "hateful content" in text
+
+
+@pytest.mark.asyncio
+async def test_dm_failure_is_swallowed(settings: Settings) -> None:
+    bot = BombaModBot(settings, DummyStore())  # type: ignore[arg-type]
+    sink = DiscordActionSink(bot)
+    guild = MagicMock(spec=discord.Guild)
+    guild.id, guild.name = 1, "Test Server"
+    member = MagicMock(spec=discord.Member)
+    member.id = 2
+    response = SimpleNamespace(status=403, reason="closed", text="", headers={})
+    member.send = AsyncMock(side_effect=discord.Forbidden(response, "closed"))
+
+    await sink._notify(guild, member, Decision(Action.DELETE, "x", confidence=1), "Removed")
