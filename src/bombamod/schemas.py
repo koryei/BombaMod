@@ -103,6 +103,7 @@ class GuildPolicy:
     strikes_enabled: bool = True
     strike_retention_days: int = 30
     feedback_retention_days: int = 90
+    log_content: bool = False
 
     @classmethod
     def from_mapping(cls, guild_id: int, values: dict[str, Any]) -> GuildPolicy:
@@ -164,4 +165,5 @@ class GuildPolicy:
             strikes_enabled=parse_bool("strikes_enabled", True),
             strike_retention_days=retention,
             feedback_retention_days=feedback_retention,
+            log_content=parse_bool("log_content"),
         )

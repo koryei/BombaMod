@@ -17,6 +17,7 @@ from discord.ext import commands
 
 from bombamod.config import Settings
 from bombamod.moderator import CaseRegistry
+from bombamod.privacy import case_excerpt
 from bombamod.providers import OpenAIProvider, OpenRouterProvider
 from bombamod.schemas import Action, Decision
 from bombamod.service import ModerationService
@@ -137,6 +138,7 @@ class DiscordActionSink:
                     member,
                     decision,
                     case_url=f"https://discord.com/channels/{guild_id}/{channel_id}/{message_id}",
+                    content=message.content if policy.log_content else "",
                 )
             except discord.HTTPException:
                 logger.warning("Moderation action succeeded but audit notice could not be sent")
@@ -210,13 +212,15 @@ class DiscordActionSink:
         decision: Decision,
         *,
         case_url: str,
+        content: str = "",
     ) -> None:
         """Queue an audit line; the alert digest collapses spam into one counted message."""
         policy = await self.bot.store.policy(guild.id)
         await self.bot.alert(
             guild.id,
             policy.review_channel_id or 0,
-            f"BombaMod {decision.action.value} on <@{member.id}>: {decision.reason[:200]}",
+            f"BombaMod {decision.action.value} on <@{member.id}>: {decision.reason[:200]}"
+            + (f" {case_excerpt(content)}" if content.strip() else ""),
             case_url,
         )
 
@@ -354,7 +358,7 @@ class BombaModBot(commands.Bot):
             return
         pending = self._pending_alerts.setdefault(guild_id, [])
         if len(pending) < MAX_PENDING_ALERTS:
-            pending.append((reason[:250], case_url))
+            pending.append((reason[:500], case_url))
         else:
             self._dropped_alert_counts[guild_id] = self._dropped_alert_counts.get(guild_id, 0) + 1
         self._alert_channels[guild_id] = channel_id
@@ -822,6 +826,33 @@ class BombaModCommands(app_commands.Group):
         )
 
     @app_commands.command(
+        name="logging", description="Include flagged message text in private review notices"
+    )
+    @app_commands.describe(
+        enabled="Show the author and an excerpt of acted-on or escalated messages"
+    )
+    async def logging_(self, interaction: discord.Interaction, enabled: bool) -> None:
+        if not await self.bot._require_admin(interaction):
+            return
+        if interaction.guild_id is None:
+            await interaction.response.send_message("Use this command in a server.", ephemeral=True)
+            return
+        policy = await self.bot.store.policy(interaction.guild_id)
+        if enabled and policy.review_channel_id is None:
+            await interaction.response.send_message(
+                "Set a private review channel with `/bm review-channel` first.", ephemeral=True
+            )
+            return
+        await self.bot.store.update_policy(interaction.guild_id, log_content=enabled)
+        await interaction.response.send_message(
+            "Review notices now include the author and a short excerpt of each deleted, "
+            "timed-out, banned or escalated message. Keep the review channel moderator-only."
+            if enabled
+            else "Review notices no longer include message text.",
+            ephemeral=True,
+        )
+
+    @app_commands.command(
         name="review-channel", description="Set the moderator review/audit channel"
     )
     async def review_channel(
@@ -1027,6 +1058,7 @@ class BombaModCommands(app_commands.Group):
             f"Decision-provider flagged-text sharing: {policy.openrouter_text_opt_in} "
             f"(host gate: {self.bot.settings.allow_openrouter_text})\n"
             f"OpenAI image scanning: {policy.image_scan_enabled}\n"
+            f"Message text in review notices: {policy.log_content}\n"
             f"Strike retention: {policy.strike_retention_days} days\n"
             f"Feedback retention: {policy.feedback_retention_days} days\n"
             f"Max timeout: {policy.max_timeout_minutes} minutes\n"

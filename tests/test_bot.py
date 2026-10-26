@@ -391,3 +391,29 @@ async def test_fallback_to_global_keeps_global_commands(settings: Settings, monk
     await bot._prune_duplicate_commands()
 
     assert bot._commands_scope == "global"
+
+
+@pytest.mark.asyncio
+async def test_audit_notice_includes_excerpt_when_content_given(settings: Settings) -> None:
+    class Store:
+        async def policy(self, guild_id: int) -> SimpleNamespace:
+            return SimpleNamespace(review_channel_id=88)
+
+        async def close(self) -> None:
+            return None
+
+    bot = BombaModBot(settings, Store())  # type: ignore[arg-type]
+    bot.alert = AsyncMock()  # type: ignore[method-assign]
+    sink = DiscordActionSink(bot)
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 1
+    member = MagicMock(spec=discord.Member)
+    member.id = 2
+    decision = Decision(Action.DELETE, "flagged for hateful content", confidence=0.99)
+
+    await sink._audit(guild, member, decision, case_url="https://x/1", content="bad  words\nhere")
+    await sink._audit(guild, member, decision, case_url="https://x/1")
+
+    with_text, without_text = (call.args[2] for call in bot.alert.await_args_list)
+    assert with_text.endswith("`bad words here`")
+    assert "`" not in without_text

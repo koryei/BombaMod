@@ -335,3 +335,28 @@ async def test_identical_spam_reuses_the_first_decision(tmp_path: Path) -> None:
     assert len(router.calls) == 1
     assert actions.calls == 10
     await store.close()
+
+
+@pytest.mark.asyncio
+async def test_review_alert_includes_author_and_excerpt_only_when_logging_enabled(
+    tmp_path: Path,
+) -> None:
+    store = Store(f"sqlite+aiosqlite:///{tmp_path / 'log.db'}")
+    await store.initialize()
+    await store.update_policy(7, moderation_enabled=True, review_channel_id=99, rules="No hate")
+    alerts = FakeAlerts()
+    service = make_service(store, FakeOpenAI(), FakeOpenRouter(), alerts)
+
+    await service.moderate(
+        guild_id=7, channel_id=2, message_id=70, user_id=4, content="secret words"
+    )
+    assert alerts.messages and "secret words" not in alerts.messages[-1]
+
+    await store.update_policy(7, log_content=True)
+    await service.moderate(
+        guild_id=7, channel_id=2, message_id=71, user_id=4, content="other words"
+    )
+    assert "`other words`" in alerts.messages[-1]
+    assert "<@4>" in alerts.messages[-1] and "<#2>" in alerts.messages[-1]
+    assert (await store.policy(7)).log_content is True
+    await store.close()

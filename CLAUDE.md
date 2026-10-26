@@ -18,6 +18,9 @@ Discord moderation bot (discord.py + SQLite/Postgres), run with Docker on a VM.
 - Deletes within 0.4s are one bulk delete (`DiscordActionSink._delete`).
 - Review alerts are batched for 20s into one counted digest (`bot._format_alert_digest`).
 
+- Opt-in `/bm logging` (policy `log_content`) adds author + 200-char excerpt (`privacy.case_excerpt`) to
+  review alerts and action audit lines; off by default.
+
 ## Deploy
 First time: `./scripts/setup-env.sh` (writes `.env`). Updates: push to `main`, then `./scripts/update.sh` on the VM.
 `.env` and `data/` are gitignored. Settings live in the `bombamod-data` Docker volume.

@@ -120,6 +120,7 @@ class Store:
                     "strikes_enabled": policy.strikes_enabled,
                     "strike_retention_days": policy.strike_retention_days,
                     "feedback_retention_days": policy.feedback_retention_days,
+                    "log_content": policy.log_content,
                 }
             )
             if row:

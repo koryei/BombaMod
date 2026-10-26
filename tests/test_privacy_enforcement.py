@@ -45,3 +45,16 @@ def test_timeout_is_clamped_and_only_timeout_can_have_duration() -> None:
 def test_rules_privacy_opt_in_is_off_by_default() -> None:
     policy = GuildPolicy.from_mapping(987, {})
     assert policy.openrouter_text_opt_in is False
+
+
+def test_case_excerpt_is_single_line_markdown_neutral_and_bounded() -> None:
+    from bombamod.privacy import case_excerpt
+
+    text = "line one\n\n**fake**  `code` [x](http://evil.test)\n" + "a" * 500
+    excerpt = case_excerpt(text, limit=60)
+    assert "\n" not in excerpt
+    assert excerpt.startswith("`") and excerpt.endswith("`")
+    assert excerpt.count("`") == 2
+    assert len(excerpt) <= 62
+    assert excerpt.endswith("…`")
+    assert case_excerpt("   \n ") == ""

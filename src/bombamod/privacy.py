@@ -36,3 +36,17 @@ def policy_excerpt(text: str, *, max_chars: int = 1800) -> str:
     """Prepare policy context without logging or retaining the original content."""
     cleaned = "".join(char for char in text if char in "\n\t" or char.isprintable())
     return cleaned[:max_chars]
+
+
+def case_excerpt(content: str, limit: int = 200) -> str:
+    """One-line, markdown-neutral excerpt for the private review channel.
+
+    Newlines are collapsed so a message cannot forge extra log lines, and the text is placed in a
+    code span (backticks removed) so links and formatting do not render.
+    """
+    flat = " ".join(content.split()).replace("`", "'")
+    if not flat:
+        return ""
+    if len(flat) > limit:
+        flat = flat[: limit - 1] + "…"
+    return f"`{flat}`"

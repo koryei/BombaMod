@@ -11,6 +11,7 @@ from typing import Protocol
 
 from bombamod.enforcement import require_admin_opt_in, severe_reasons
 from bombamod.moderator import CaseRegistry
+from bombamod.privacy import case_excerpt
 from bombamod.providers import OpenAIProvider, OpenRouterProvider, ProviderError
 from bombamod.schemas import Action, Decision, GuildPolicy, ModerationResult
 from bombamod.storage import Store
@@ -99,6 +100,11 @@ class ModerationService:
         if policy.monitored_channel_ids and channel_id not in policy.monitored_channel_ids:
             return CaseOutcome(None, Decision(Action.ALLOW, "Channel is not monitored."))
 
+        detail = (
+            f" From <@{user_id}> in <#{channel_id}>: {case_excerpt(content)}"
+            if policy.log_content and content.strip()
+            else ""
+        )
         cache_key = None if image_urls else self._cache_key(guild_id, user_id, content)
         if cache_key is not None:
             cached = self._cached_decision(cache_key)
@@ -121,6 +127,7 @@ class ModerationService:
                         channel_id,
                         "OpenAI text classification is disabled; manual review required.",
                         message_id=message_id,
+                        detail=detail,
                     )
                     return CaseOutcome(None, decision)
                 image_data: list[str] = []
@@ -167,6 +174,7 @@ class ModerationService:
                         channel_id,
                         "Message exceeds scan limit; only the beginning was scanned.",
                         message_id=message_id,
+                        detail=detail,
                     )
                     return CaseOutcome(result, decision)
                 if image_scan_incomplete:
@@ -180,6 +188,7 @@ class ModerationService:
                         channel_id,
                         "Enabled image scan incomplete; moderator review is required.",
                         message_id=message_id,
+                        detail=detail,
                     )
                     return CaseOutcome(result, decision)
                 if not result.flagged:
@@ -200,6 +209,7 @@ class ModerationService:
                         channel_id,
                         "Classifier flagged content without category details; review required.",
                         message_id=message_id,
+                        detail=detail,
                     )
                     return CaseOutcome(result, decision)
 
@@ -223,6 +233,7 @@ class ModerationService:
                         channel_id,
                         self._review_reason(result, decision),
                         message_id=message_id,
+                        detail=detail,
                     )
                     return CaseOutcome(result, decision)
 
@@ -270,6 +281,7 @@ class ModerationService:
                         channel_id,
                         self._review_reason(result, decision),
                         message_id=message_id,
+                        detail=detail,
                     )
                 elif decision.action != Action.ALLOW and not policy.auto_actions_enabled:
                     await self._alert(
@@ -278,6 +290,7 @@ class ModerationService:
                         channel_id,
                         self._review_reason(result, decision),
                         message_id=message_id,
+                        detail=detail,
                     )
                 elif decision.action != Action.ALLOW:
                     applied = await self._apply(
@@ -292,6 +305,7 @@ class ModerationService:
                             channel_id,
                             "Discord action failed; moderator review required.",
                             message_id=message_id,
+                            detail=detail,
                         )
 
                 logger.info(
@@ -317,6 +331,7 @@ class ModerationService:
                     channel_id,
                     "AI moderation unavailable; please review manually.",
                     message_id=message_id,
+                    detail=detail,
                 )
                 return CaseOutcome(
                     None,
@@ -415,6 +430,7 @@ class ModerationService:
         reason: str,
         *,
         message_id: int | None = None,
+        detail: str = "",
     ) -> None:
         if policy.review_channel_id is None:
             # Fail closed and never post private case context in a public source channel.
@@ -425,4 +441,6 @@ class ModerationService:
             if message_id is not None
             else None
         )
-        await self.alerts.alert(guild_id, policy.review_channel_id, reason[:500], case_url)
+        await self.alerts.alert(
+            guild_id, policy.review_channel_id, f"{reason[:300]}{detail}"[:500], case_url
+        )
