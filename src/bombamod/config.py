@@ -75,7 +75,7 @@ class Settings:
                 f"Missing required environment variables: {', '.join(missing)}"
             )
 
-        model = os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3-super-120b-a12b:free").strip()
+        model = os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3-ultra-550b-a55b:free").strip()
         if not model:
             raise ConfigurationError("OPENROUTER_MODEL cannot be empty")
 

@@ -26,7 +26,7 @@ A responsible improvement loop is: start with clear written rules and automatic 
 - Python 3.11 or newer (Docker uses Python 3.12).
 - A Discord application with a bot token.
 - An OpenAI API key for the Moderation API. OpenAI currently documents `/v1/moderations` as free to use, but account access/rate limits and provider terms still apply.
-- An OpenRouter API key. `nvidia/nemotron-3-super-120b-a12b:free` is a third-party free model endpoint with quotas, capacity changes, and possible outages; it is not unlimited or guaranteed. If it becomes unavailable, BombaMod escalates for moderator review instead of pretending content passed.
+- An OpenRouter API key. `nvidia/nemotron-3-ultra-550b-a55b:free` is a third-party free model endpoint with quotas, capacity changes, and possible outages; it is not unlimited or guaranteed. If it becomes unavailable, BombaMod escalates for moderator review instead of pretending content passed.
 
 ## Discord setup
 
@@ -85,7 +85,7 @@ Commands under `/bm` are restricted to moderators (Manage Messages/Moderate Memb
 | `DISCORD_TOKEN` | Yes | — | Discord bot token. |
 | `OPENAI_API_KEY` | Yes | — | OpenAI Moderation API key. |
 | `OPENROUTER_API_KEY` | Yes | — | OpenRouter API key for Nemotron decisions. |
-| `OPENROUTER_MODEL` | No | `nvidia/nemotron-3-super-120b-a12b:free` | Model id can be changed by the operator. |
+| `OPENROUTER_MODEL` | No | `nvidia/nemotron-3-ultra-550b-a55b:free` | Model id can be changed by the operator. |
 | `DATABASE_URL` | No | local SQLite | `postgresql://...` is normalized to async PostgreSQL. Use secret-manager variables in hosting. |
 | `DISCORD_GUILD_ID` | No | global commands | Optional development guild for fast command registration. |
 | `MAX_CONCURRENT_MODERATION` | No | `4` | Bound concurrent message processing (1–64). |
