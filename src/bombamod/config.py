@@ -76,7 +76,7 @@ class Settings:
                 f"Missing required environment variables: {', '.join(missing)}"
             )
 
-        model = os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3-ultra-550b-a55b:free").strip()
+        model = os.getenv("OPENROUTER_MODEL", "inception/mercury-decide:free").strip()
         if not model:
             raise ConfigurationError("OPENROUTER_MODEL cannot be empty")
 

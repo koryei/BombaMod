@@ -136,3 +136,23 @@ async def test_image_fetch_rejects_non_discord_host() -> None:
     provider = OpenAIProvider("key", NeverHTTP(), max_image_bytes=100000)  # type: ignore[arg-type]
     with pytest.raises(ProviderError, match="approved"):
         await provider.fetch_image_data_url("https://example.com/payload.png")
+
+
+@pytest.mark.asyncio
+async def test_decide_models_use_the_decisions_api() -> None:
+    capture = CaptureHTTP(
+        {"answers": {"action": {"type": "choice", "choice": "delete", "confidence": 0.99}}}
+    )
+    provider = OpenRouterProvider("secret", "inception/mercury-decide:free", capture)  # type: ignore[arg-type]
+    decision = await provider.decide(
+        rules="Be kind",
+        categories={"harassment": True},
+        scores={"harassment": 0.9},
+        message_text=None,
+        strike_count=0,
+        minimum_confidence=0.8,
+    )
+    assert decision.action.value == "delete"
+    assert decision.confidence == 0.99
+    assert capture.last_request is not None
+    assert capture.last_request["url"] == "https://openrouter.ai/api/alpha/decisions"
