@@ -509,10 +509,7 @@ class BombaModBot(commands.Bot):
                 ):
                     image_urls.append(attachment.url)
         if not message.content and not image_urls:
-            logger.info(
-                "Ignored message in guild %s: empty content (is Message Content Intent enabled?)",
-                message.guild.id,
-            )
+            logger.debug("Ignored message in guild %s: no text to scan", message.guild.id)
             return
         try:
             self._moderation_queue.put_nowait((message, self.message_fingerprint(message)))
