@@ -1,4 +1,4 @@
-"""Async API clients for OpenAI Omni Moderation and OpenRouter Nemotron."""
+"""Async API clients for OpenAI Omni Moderation and the decision model (Inception/OpenRouter)."""
 
 from __future__ import annotations
 
@@ -162,7 +162,7 @@ class OpenRouterProvider:
         strike_count: int,
         minimum_confidence: float,
     ) -> Decision:
-        """Ask Nemotron for a constrained recommendation; enforcement validates again."""
+        """Ask the decision model for a constrained recommendation; enforcement validates again."""
         redacted = redact_text(message_text) if message_text is not None else None
         system = (
             "You are BombaMod, a Discord server policy decision assistant. Apply only the server's "
@@ -231,29 +231,29 @@ class OpenRouterProvider:
             response.raise_for_status()
             payload = response.json()
             if not isinstance(payload, dict):
-                raise ProviderError("OpenRouter returned an invalid response")
+                raise ProviderError("Decision provider returned an invalid response")
             choices = payload.get("choices")
             if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-                raise ProviderError("OpenRouter returned no decision")
+                raise ProviderError("Decision provider returned no decision")
             message = choices[0].get("message")
             content = message.get("content") if isinstance(message, dict) else None
             if not isinstance(content, str):
-                raise ProviderError("OpenRouter decision was not text")
+                raise ProviderError("Decision was not text")
             decision_payload = json.loads(content)
             try:
                 return Decision.from_json(decision_payload)
             except ValueError as exc:
-                raise ProviderError("OpenRouter returned an invalid decision") from exc
+                raise ProviderError("Decision provider returned an invalid decision") from exc
         except ProviderError:
             raise
         except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError) as exc:
             status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
             logger.warning(
-                "OpenRouter decision request failed or was invalid (model=%s status=%s)",
+                "Decision request failed or was invalid (model=%s status=%s)",
                 self.model,
                 status,
             )
-            raise ProviderError("OpenRouter decision request failed") from exc
+            raise ProviderError("Decision request failed") from exc
 
     async def _decide_structured(self, case: dict[str, Any]) -> Decision:
         """Single-pass classification via OpenRouter's Decisions API (~0.3s, no text generation)."""
@@ -301,11 +301,11 @@ class OpenRouterProvider:
         except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
             status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
             logger.warning(
-                "OpenRouter decision request failed or was invalid (model=%s status=%s)",
+                "Decision request failed or was invalid (model=%s status=%s)",
                 self.model,
                 status,
             )
-            raise ProviderError("OpenRouter decision request failed") from exc
+            raise ProviderError("Decision request failed") from exc
         return Decision(
             action=action,
             reason=f"Decision model chose {action.value}.",

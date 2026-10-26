@@ -8,8 +8,9 @@ Discord moderation bot (discord.py + SQLite/Postgres), run with Docker on a VM.
 3. Roast guard (`enforcement.SEVERE_CATEGORIES`): only severe categories (hate, threats, self-harm,
    violence, sexual/minors) can trigger action. Plain harassment/insults are allowed silently.
 4. Decision model via OpenRouter (`providers.OpenRouterProvider`). Default
-   `inception/mercury-decide:free` uses the Decisions API (`/api/alpha/decisions`, ~0.3s). Other models
-   use chat completions with reasoning disabled. The model only sees scores unless text sharing is on.
+   `mercury-decide` on Inception (`DECISION_BASE_URL=https://api.inceptionlabs.ai/v1`, `/v1/decisions`) or
+   `inception/mercury-decide:free` on OpenRouter (`/api/alpha/decisions`). Other models use chat completions
+   with reasoning disabled. Env: `DECISION_API_KEY/BASE_URL/MODEL` (legacy `OPENROUTER_*` still read). The model only sees scores unless text sharing is on.
 5. `DiscordActionSink` applies delete/warn/timeout/ban, then DMs the user once per 60s.
 
 ## Spam handling
@@ -18,7 +19,7 @@ Discord moderation bot (discord.py + SQLite/Postgres), run with Docker on a VM.
 - Review alerts are batched for 20s into one counted digest (`bot._format_alert_digest`).
 
 ## Deploy
-Push to `main`, then on the VM run `bmup` (git pull + docker compose up -d --build).
+First time: `./scripts/setup-env.sh` (writes `.env`). Updates: push to `main`, then `./scripts/update.sh` on the VM.
 `.env` and `data/` are gitignored. Settings live in the `bombamod-data` Docker volume.
 
 ## Checks

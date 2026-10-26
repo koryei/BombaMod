@@ -1,8 +1,8 @@
 # BombaMod
 
-**Free, open-source Discord moderation powered by OpenAI Omni Moderation and NVIDIA Nemotron.**
+**Free, open-source Discord moderation powered by OpenAI Omni Moderation and Inception Mercury Decide.**
 
-BombaMod is an MIT-licensed self-hosted bot. You can use, modify, and redistribute the software without paying a BombaMod license fee. It runs on a small CPU worker and starts with SQLite; no GPU, paid database, or paid inference model is needed for the default setup. You do need a Discord application/token and API keys. Third-party free quotas and hosting reliability are not guaranteed by BombaMod.
+BombaMod is an MIT-licensed self-hosted bot. You can use, modify, and redistribute the software without paying a BombaMod license fee. It runs on a small CPU worker and starts with SQLite; no GPU or paid database is needed. You do need a Discord application/token and API keys. Third-party free quotas and hosting reliability are not guaranteed by BombaMod.
 
 > **AI is fallible.** A moderation model is not a human moderator or a substitute for server safety policies. Keep actions off until your moderators have tested the system, use a review channel, and make an appeals/contact path available. BombaMod never automatically punishes on provider failure.
 
@@ -10,23 +10,26 @@ BombaMod is an MIT-licensed self-hosted bot. You can use, modify, and redistribu
 
 - Classifies real-time server text with OpenAI's `omni-moderation-latest` model.
 - Can optionally scan eligible images through the same OpenAI Moderation API. Image scanning is off by default.
-- Can ask NVIDIA Nemotron 3 Super through OpenRouter to interpret moderation categories and your server rules, and (only after explicit server opt-in) best-effort-redacted flagged text.
+- Asks a decision model (Inception **Mercury Decide**, ~0.3 s) to interpret severe moderation categories against your server rules, and (only after explicit server opt-in) best-effort-redacted flagged text.
+- **Tolerates banter.** Only severe categories (hate, threats, self-harm, violence, sexual content involving minors) can trigger an action. Plain insults and roasting are allowed silently.
+- **Handles spam efficiently.** Identical repeated messages reuse the first decision, deletes within 0.4 s are sent as one bulk delete, and moderator alerts are collapsed into a counted digest.
+- **Tells people why.** A member who is deleted, timed out or banned gets one short DM (at most one per minute) naming the server and reason.
 - Lets administrators manage rules and action/privacy limits with the `/bm` slash-command group.
 - Supports moderator correction labels for offline evaluation. It does **not** silently train model weights.
 - Stores guild settings and short-retention metadata in SQLite by default or PostgreSQL via `DATABASE_URL`. Message text, images, and prompts are not persisted.
 
 ### How policy setup relates to model training
 
-`/bm rules` supplies moderator-authored server policy to Nemotron on each decision. This is in-context policy, not fine-tuning: it does not change the model's parameters and does not make the model learn automatically from member actions. `/bm feedback` stores the message ID, moderator ID, predicted/corrected action and category labels for a case held in memory; only cases still available in that bot process can be labeled. Use labels to measure a separate offline test set and tune rules/thresholds. Labels are **not** used to retrain a model.
+`/bm rules` supplies moderator-authored server policy to the decision model on each decision. This is in-context policy, not fine-tuning: it does not change the model's parameters and does not make the model learn automatically from member actions. `/bm feedback` stores the message ID, moderator ID, predicted/corrected action and category labels for a case held in memory; only cases still available in that bot process can be labeled. Use labels to measure a separate offline test set and tune rules/thresholds. Labels are **not** used to retrain a model.
 
-A responsible improvement loop is: start with clear written rules and automatic actions off; create synthetic examples for allowed/prohibited/ambiguous cases; have moderators label representative, de-identified cases; measure false positives and false negatives by category; revise the rules or confidence threshold; replay the test set; then pilot in review-only mode before enabling actions. Fine-tuning a 120B model requires separate compute, data rights/consent, dataset governance, evaluation, and deployment. BombaMod does not do this in the bot process, and OpenRouter's free inference endpoint is not a training service.
+A responsible improvement loop is: start with clear written rules and automatic actions off; create synthetic examples for allowed/prohibited/ambiguous cases; have moderators label representative, de-identified cases; measure false positives and false negatives by category; revise the rules or confidence threshold; replay the test set; then pilot in review-only mode before enabling actions. Fine-tuning a model requires separate compute, data rights/consent, dataset governance, evaluation, and deployment. BombaMod does not do this in the bot process.
 
 ## Prerequisites
 
 - Python 3.11 or newer (Docker uses Python 3.12).
 - A Discord application with a bot token.
 - An OpenAI API key for the Moderation API. OpenAI currently documents `/v1/moderations` as free to use, but account access/rate limits and provider terms still apply.
-- An OpenRouter API key. `inception/mercury-decide:free` is a third-party free model endpoint with quotas, capacity changes, and possible outages; it is not unlimited or guaranteed. If it becomes unavailable, BombaMod escalates for moderator review instead of pretending content passed.
+- An Inception API key (recommended) from [platform.inceptionlabs.ai](https://platform.inceptionlabs.ai) for Mercury Decide. An OpenRouter key also works (`inception/mercury-decide:free`) but its free tier rate-limits quickly. If the decision provider is unavailable, BombaMod escalates for moderator review instead of pretending content passed.
 
 ## Discord setup
 
@@ -44,7 +47,7 @@ python -m venv .venv
 . .venv/bin/activate                 # Windows PowerShell: .venv\Scripts\Activate.ps1
 python -m pip install -e '.[dev]'
 cp .env.example .env                 # Windows: copy .env.example .env
-# Add DISCORD_TOKEN, OPENAI_API_KEY, and OPENROUTER_API_KEY to .env
+# Add DISCORD_TOKEN, OPENAI_API_KEY, and DECISION_API_KEY to .env
 bombamod
 ```
 
@@ -73,10 +76,10 @@ Commands under `/bm` are restricted to moderators (Manage Messages/Moderate Memb
 
 - **OpenAI:** Message text is sent to OpenAI for classification whenever moderation is enabled, unless the operator sets `DISABLE_OPENAI_TEXT=true` (in which case every eligible message is escalated rather than treated as cleared). If opted in, enabled images are fetched from Discord's HTTPS CDN and sent with the text to OpenAI. The official model accepts text/images (not audio) and supports images up to 20 MB; BombaMod uses a configurable lower download cap by default. OpenAI documents API content as not used for model training by default, but says abuse-monitoring logs may retain content up to 30 days. See [OpenAI data controls](https://developers.openai.com/api/docs/guides/your-data).
 - **Child safety:** OpenAI says **do not send known or suspected child sexual abuse material (CSAM) to its Moderation API**. Omni Moderation is not a CSAM detector; its `sexual/minors` category is text-only and will not identify sexual/minor content in images. Never enable image scanning for reported/suspected CSAM. Follow Discord/platform reporting and applicable law; preserve evidence only through your approved safety process, not by sending it to this service.
-- **OpenRouter:** By default BombaMod sends Nemotron the rules, category flags/scores, and bounded strike count, but **not** message text. A server admin must explicitly set `/bm privacy share_text:true` to also send best-effort-redacted flagged text. Redaction removes common mentions, identifiers, contact details and links, but is not a guarantee against personal or confidential information. OpenRouter's free model listing specifically cautions against sending personal/confidential data. Review current provider retention and privacy settings before opting in; do not use free routing for sensitive/private communities unless you accept its terms and risks.
+- **Decision provider (Inception/OpenRouter):** By default BombaMod sends the decision model the rules, category flags/scores, and bounded strike count, but **not** message text. A server admin must explicitly set `/bm privacy share_text:true` to also send best-effort-redacted flagged text. Redaction removes common mentions, identifiers, contact details and links, but is not a guarantee against personal or confidential information. Review the provider's retention and privacy terms before opting in; do not enable text sharing for sensitive/private communities unless you accept them.
 - **Local data:** Raw message text, images, model prompts, and message contents are never written to the BombaMod database or application logs. Stored Discord IDs and action/category labels are still personal data and need an appropriate privacy notice and retention policy. Strike metadata expires on use after its configured 1–365 day window; feedback metadata is pruned on writes after its configured 1–365 day retention window. Retention is configurable with `/bm retention`. SQLite is local and is lost if your host's filesystem is ephemeral. Backups are the operator's responsibility.
 - **Actions:** Automatic actions are disabled by default. Decisions are schema-validated and bounded by server settings; bot permissions and Discord's role hierarchy are checked. Ban opt-in is separate and disabled by default. No system can guarantee correct AI actions; have moderators monitor and provide an appeal process.
-- **Prompt injection:** Member content is untrusted input. The decision prompt instructs Nemotron to treat it as data, but prompt instructions do not guarantee model behavior. Code, not the model, enforces action limits. Do not rely on AI for emergencies, threat response, self-harm support, or legal determinations.
+- **Prompt injection:** Member content is untrusted input. The decision prompt instructs the model to treat it as data, but prompt instructions do not guarantee model behavior. Code, not the model, enforces action limits. Do not rely on AI for emergencies, threat response, self-harm support, or legal determinations.
 
 ## Configuration reference
 
@@ -84,11 +87,12 @@ Commands under `/bm` are restricted to moderators (Manage Messages/Moderate Memb
 | --- | --- | --- | --- |
 | `DISCORD_TOKEN` | Yes | — | Discord bot token. |
 | `OPENAI_API_KEY` | Yes | — | OpenAI Moderation API key. |
-| `OPENROUTER_API_KEY` | Yes | — | OpenRouter API key for Nemotron decisions. |
-| `OPENROUTER_MODEL` | No | `inception/mercury-decide:free` | Model id can be changed by the operator. |
+| `DECISION_API_KEY` | Yes | — | Key for the decision provider (Inception, or OpenRouter). Legacy name `OPENROUTER_API_KEY` still works. |
+| `DECISION_BASE_URL` | No | `https://openrouter.ai/api/v1` | Use `https://api.inceptionlabs.ai/v1` for Inception's official API (recommended). |
+| `DECISION_MODEL` | No | `inception/mercury-decide:free` | `mercury-decide` on Inception, `inception/mercury-decide:free` on OpenRouter. Names containing `decide`/`jev` use the Decisions API; others use chat completions. |
 | `DATABASE_URL` | No | local SQLite | `postgresql://...` is normalized to async PostgreSQL. Use secret-manager variables in hosting. |
 | `DISCORD_GUILD_ID` | No | global commands | Optional development guild for fast command registration. |
-| `MAX_CONCURRENT_MODERATION` | No | `4` | Bound concurrent message processing (1–64). |
+| `MAX_CONCURRENT_MODERATION` | No | `4` (setup script writes `8`) | Bound concurrent message processing (1–64). |
 | `HTTP_TIMEOUT_SECONDS` | No | `12` | Per-request network timeout (3–60). |
 | `MAX_IMAGE_BYTES` | No | `8000000` | Total image bytes per case (100 KB–20 MB), subject to provider support. |
 | `MAX_MESSAGE_CHARS` | No | `6000` | Maximum text sent for classification; longer messages are escalated (1,000–20,000). |
@@ -97,22 +101,68 @@ Commands under `/bm` are restricted to moderators (Manage Messages/Moderate Memb
 | `DISABLE_OPENAI_TEXT` | No | `false` | If true, do not transmit message text to OpenAI; all cases are escalated for moderator review. |
 | `LOG_LEVEL` | No | `INFO` | Standard Python logging level. |
 
-## Deployment
+## Production deployment (Docker on a VM)
 
-Run BombaMod as a **persistent worker/container**, not a short-lived serverless function: Discord's Gateway is a persistent WebSocket. The included Dockerfile runs as a non-root user, needs no inbound port and no GPU:
+BombaMod is a **persistent worker** (Discord's Gateway is a WebSocket), not a serverless function. It needs no inbound port and no GPU; any small Linux VM with Docker works.
+
+### 1. First-time setup
 
 ```bash
-cp .env.example .env
-# Edit .env and add the Discord/OpenAI/OpenRouter credentials.
-docker compose up -d --build
-docker compose logs -f bombamod
+git clone https://github.com/koryei/BombaMod.git
+cd BombaMod
+./scripts/setup-env.sh      # asks for each key (hidden input), tests them, writes .env (chmod 600)
+./scripts/update.sh         # builds and starts the container, then follows the logs
 ```
 
-The included [Compose file](compose.yaml) persists SQLite data in a named volume, runs read-only with dropped Linux capabilities, restarts after failures, and bounds Docker log rotation. It uses the volume-backed SQLite URL unless `DATABASE_URL` is set in `.env`, allowing an external PostgreSQL deployment. Docker secrets and host hardening remain the operator's responsibility. To shut down, run `docker compose down`; this preserves the named data volume. Back it up before removing volumes or changing database schemas.
+Where each value comes from:
 
-For PostgreSQL, use a managed PostgreSQL URL in `DATABASE_URL` and put credentials in your host's secret manager. Make backups and test restoration. There is no automatic database migration framework yet; this initial release creates tables on startup, so back up data before future schema upgrades. SQLite is appropriate for a single bot instance; use PostgreSQL for multi-replica or higher-availability deployments. Run only one active bot against a SQLite database.
+| Variable | Where to get it |
+| --- | --- |
+| `DISCORD_TOKEN` | [Developer Portal](https://discord.com/developers/applications) → your app → **Bot** → **Reset Token**. Also enable **Message Content Intent** on that page. |
+| `OPENAI_API_KEY` | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) (the moderation endpoint is free). |
+| `DECISION_API_KEY` | [platform.inceptionlabs.ai](https://platform.inceptionlabs.ai) → API keys. |
+| `DECISION_BASE_URL` / `DECISION_MODEL` | `https://api.inceptionlabs.ai/v1` and `mercury-decide` (the script sets these). |
 
-Free hosting is **best effort, not 24/7**. Providers can sleep/restart free instances, erase ephemeral filesystems, cap worker hours/outbound requests, and rate-limit APIs. The Gateway disconnect means messages sent while offline will not be scanned. Do not bypass provider sleep policies with artificial keep-alive traffic. Use an always-on plan if continuous moderation is a production requirement, and maintain native Discord AutoMod/human coverage as backup.
+Prefer to edit by hand? `cp .env.example .env`, fill in the blanks, then `chmod 600 .env`. Values are plain `KEY=value` with no quotes or spaces. `.env` is git-ignored and never leaves the server; if a token ever leaks, reset it in the provider's dashboard and re-run `./scripts/setup-env.sh`.
+
+A healthy start logs `BombaMod connected` and `Decision model: mercury-decide via https://api.inceptionlabs.ai/v1`. If the bot exits right away, the log names the missing variable.
+
+### 2. Configure the server (in Discord)
+
+1. Invite the bot with **View Channels, Send Messages, Read Message History, Manage Messages, Moderate Members** (add **Ban Members** only if you want bans). Put the bot's role **above** the members it may act on; Discord blocks actions on anyone with an equal or higher role.
+2. Create a private channel (hidden from `@everyone`, visible to the bot) and run `/bm review-channel`.
+3. `/bm rules` with short, explicit rules, then `/bm setup`.
+4. `/bm enforcement enabled:true` once you trust it. Run `/bm status` to confirm. Until enforcement is on, flagged cases only go to the review channel.
+
+### 3. Updating
+
+Push to `main`, then on the server:
+
+```bash
+cd ~/BombaMod && ./scripts/update.sh
+```
+
+This pulls, rebuilds, restarts, and tails the logs. Settings live in the `bombamod-data` Docker volume and survive updates. Optional shortcut: `echo "alias bmup='cd ~/BombaMod && ./scripts/update.sh'" >> ~/.bashrc`.
+
+### Operations
+
+- Logs: `docker compose logs -f bombamod`. Stop: `docker compose down` (the data volume is kept). Back up the volume before removing it.
+- Every message logs one line (`not flagged`, `banter, allowed`, or `action=...`) without its text.
+- The Compose file runs the container read-only, non-root, with all Linux capabilities dropped, restarts it on failure, and rotates logs.
+- For PostgreSQL, set `DATABASE_URL` in `.env`. Tables are created on startup; there is no migration framework yet, so back up before upgrading. Run only one active bot per SQLite database.
+- Free hosting is best effort: messages sent while the bot is offline are not scanned. Use an always-on VM and keep Discord AutoMod enabled as a backup.
+
+### Troubleshooting
+
+| Symptom | Cause |
+| --- | --- |
+| Nothing happens, `/bm status` shows `Moderation enabled: False` | Run `/bm setup` (needs a review channel first). |
+| Flagged cases only appear in the review channel | `/bm enforcement enabled:true` is off. |
+| `Discord action failed` alert | The bot lacks Manage Messages / Moderate Members, or the member's top role is not below the bot's. |
+| `Decision request failed ... status=401` | Wrong `DECISION_API_KEY`; re-run `./scripts/setup-env.sh`. |
+| `... status=404` or `400` | Wrong `DECISION_BASE_URL` or `DECISION_MODEL`. |
+| `... status=429` | Provider rate limit; use the Inception API instead of OpenRouter's free tier. |
+| `Private moderator alert channel is unavailable` | The review channel is visible to `@everyone` or the bot cannot view/send there. |
 
 ## Development and checks
 

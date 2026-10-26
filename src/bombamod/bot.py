@@ -256,6 +256,12 @@ class BombaModBot(commands.Bot):
             http,
             max_image_bytes=self.settings.max_image_bytes,
         )
+        logger.info(
+            "Decision model: %s via %s (text sharing host gate: %s)",
+            self.settings.openrouter_model,
+            self.settings.openrouter_base_url,
+            self.settings.allow_openrouter_text,
+        )
         openrouter = OpenRouterProvider(
             self.settings.openrouter_api_key,
             self.settings.openrouter_model,
@@ -664,7 +670,7 @@ class BombaModCommands(app_commands.Group):
         image_state = "enabled" if image_enabled else "disabled"
         await interaction.response.send_message(
             "BombaMod enabled. Add `/bm rules`; autonomous actions and bans are off. "
-            f"Image scanning is {image_state}; OpenRouter text sharing is unchanged.",
+            f"Image scanning is {image_state}; decision-provider text sharing is unchanged.",
             ephemeral=True,
         )
 
@@ -748,7 +754,7 @@ class BombaModCommands(app_commands.Group):
         name="privacy", description="Opt in to optional model text/image processing"
     )
     @app_commands.describe(
-        share_text="Share redacted flagged text with OpenRouter (personal data may remain)",
+        share_text="Share redacted flagged text with the decision model (personal data may remain)",
         scan_images="Send eligible image attachments to OpenAI Omni Moderation",
     )
     async def privacy(
@@ -770,7 +776,7 @@ class BombaModCommands(app_commands.Group):
             "enabled" if self.bot.settings.allow_openrouter_text else "blocked by host config"
         )
         await interaction.response.send_message(
-            f"OpenRouter text sharing: {text_state}; host gate is {host_text_state}. "
+            f"Decision-provider text sharing: {text_state}; host gate is {host_text_state}. "
             "Redaction may miss personal data. "
             f"OpenAI image scans: {image_state}. Never send suspected CSAM (not detected here).",
             ephemeral=True,
@@ -979,7 +985,7 @@ class BombaModCommands(app_commands.Group):
             f"Rules configured: {bool(policy.rules)}\n"
             f"Autonomous actions: {policy.auto_actions_enabled}\n"
             f"Bans: {policy.ban_opt_in}\n"
-            f"OpenRouter flagged-text sharing: {policy.openrouter_text_opt_in} "
+            f"Decision-provider flagged-text sharing: {policy.openrouter_text_opt_in} "
             f"(host gate: {self.bot.settings.allow_openrouter_text})\n"
             f"OpenAI image scanning: {policy.image_scan_enabled}\n"
             f"Strike retention: {policy.strike_retention_days} days\n"

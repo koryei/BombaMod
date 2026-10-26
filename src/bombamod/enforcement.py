@@ -34,7 +34,7 @@ def severe_reasons(result: ModerationResult) -> list[str]:
 
 
 def constrain_decision(decision: Decision, policy: GuildPolicy) -> Decision:
-    """Clamp/deny risky actions regardless of Nemotron's response."""
+    """Clamp/deny risky actions regardless of the model's response."""
     if decision.confidence < policy.min_confidence and decision.action != Action.ESCALATE:
         return Decision(
             action=Action.ESCALATE,

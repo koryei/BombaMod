@@ -5,12 +5,12 @@ build-backend = "hatchling.build"
 [project]
 name = "bombamod"
 version = "0.1.0"
-description = "A free, open-source Discord moderation bot powered by OpenAI Omni Moderation and NVIDIA Nemotron."
+description = "A free, open-source Discord moderation bot powered by OpenAI Omni Moderation and Inception Mercury Decide."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 authors = [{ name = "BombaMod contributors" }]
-keywords = ["discord", "moderation", "openai", "nemotron", "open-source"]
+keywords = ["discord", "moderation", "openai", "mercury", "open-source"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Environment :: Console",
