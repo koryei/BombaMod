@@ -179,21 +179,34 @@ class OpenRouterProvider:
                 {"role": "user", "content": json.dumps(case, ensure_ascii=True)},
             ],
             "temperature": 0,
-            "max_tokens": 220,
+            "max_tokens": 300,
             "response_format": {"type": "json_object"},
+            # Reasoning models otherwise spend the token budget thinking and return no JSON.
+            "reasoning": {"enabled": False},
         }
         try:
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://github.com/bombamod/bombamod",
+                "X-Title": "BombaMod",
+            }
             response = await _post_with_retry(
                 self.http,
                 "https://openrouter.ai/api/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json",
-                    "HTTP-Referer": "https://github.com/bombamod/bombamod",
-                    "X-Title": "BombaMod",
-                },
+                headers=headers,
                 json_body=request,
             )
+            if response.status_code == 400:
+                # Some models mandate reasoning; retry with a budget that leaves room for output.
+                request.pop("reasoning")
+                request["max_tokens"] = 1500
+                response = await _post_with_retry(
+                    self.http,
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers=headers,
+                    json_body=request,
+                )
             response.raise_for_status()
             payload = response.json()
             if not isinstance(payload, dict):
