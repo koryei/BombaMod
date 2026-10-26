@@ -23,6 +23,10 @@ from bombamod.storage import Store
 
 logger = logging.getLogger(__name__)
 
+# Collect review alerts for this long so a spammer produces one digest, not a flood.
+ALERT_BATCH_SECONDS = 20
+MAX_PENDING_ALERTS = 200
+
 
 class DiscordActionSink:
     def __init__(self, bot: BombaModBot) -> None:
@@ -254,7 +258,7 @@ class BombaModBot(commands.Bot):
             logger.error("Moderator alert has no private review-channel destination")
             return
         pending = self._pending_alerts.setdefault(guild_id, [])
-        if len(pending) < 32:
+        if len(pending) < MAX_PENDING_ALERTS:
             pending.append((reason[:250], case_url))
         else:
             self._dropped_alert_counts[guild_id] = self._dropped_alert_counts.get(guild_id, 0) + 1
@@ -266,7 +270,7 @@ class BombaModBot(commands.Bot):
         attempt = 0
         batch_channel_id = 0
         while True:
-            await asyncio.sleep(1 if attempt == 0 else min(2**attempt, 30))
+            await asyncio.sleep(ALERT_BATCH_SECONDS if attempt == 0 else min(2**attempt, 30))
             items = self._pending_alerts.pop(guild_id, [])
             channel_id = self._alert_channels.pop(guild_id, 0)
             dropped = self._dropped_alert_counts.pop(guild_id, 0)
@@ -298,21 +302,14 @@ class BombaModBot(commands.Bot):
                 self._alert_tasks.pop(guild_id, None)
                 logger.error("Private moderator alert channel is unavailable; review configuration")
                 return
-            lines = ["⚠️ **BombaMod moderator review queue**"]
-            for alert_reason, case_url in items[:12]:
-                line = f"• {alert_reason}"
-                if case_url:
-                    line += f" — <{case_url}>"
-                lines.append(line[:250])
-            grouped = dropped + max(0, len(items) - 12)
-            if grouped:
-                lines.append(f"• {grouped} additional cases were grouped; inspect recent messages.")
+            messages = self._format_alert_digest(items, dropped)
             failed = False
             try:
-                await private_channel.send(
-                    "\n".join(lines)[:1900],
-                    allowed_mentions=discord.AllowedMentions.none(),
-                )
+                for text in messages:
+                    await private_channel.send(
+                        text,
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
             except discord.HTTPException:
                 logger.error("Could not deliver a private moderator review queue")
                 failed = True
@@ -332,6 +329,38 @@ class BombaModBot(commands.Bot):
             self._alert_tasks.pop(guild_id, None)
             return
 
+    @staticmethod
+    def _format_alert_digest(items: list[tuple[str, str | None]], dropped: int) -> list[str]:
+        """Collapse identical alerts into counted lines and split into Discord-sized messages."""
+        groups: dict[str, list[str]] = {}
+        for reason, case_url in items:
+            links = groups.setdefault(reason, [])
+            if case_url:
+                links.append(case_url)
+        total = len(items) + dropped
+        header = f"⚠️ **BombaMod moderator review queue** ({total} case{'s' if total != 1 else ''})"
+        lines: list[str] = []
+        for reason, links in groups.items():
+            count = sum(1 for r, _ in items if r == reason)
+            line = f"• {'×' + str(count) + ' ' if count > 1 else ''}{reason}"
+            if links:
+                shown = " ".join(f"<{url}>" for url in links[:3])
+                extra = f" (+{len(links) - 3} more)" if len(links) > 3 else ""
+                line += f" — {shown}{extra}"
+            lines.append(line[:500])
+        if dropped:
+            lines.append(f"• {dropped} additional cases were grouped; inspect recent messages.")
+        messages: list[str] = []
+        current = header
+        for line in lines:
+            if len(current) + len(line) + 1 > 1900:
+                messages.append(current)
+                current = line
+            else:
+                current += "\n" + line
+        messages.append(current)
+        return messages[:5]
+
     def _restore_alert_batch(
         self,
         guild_id: int,
@@ -341,8 +370,8 @@ class BombaModBot(commands.Bot):
     ) -> None:
         """Retain failed notices ahead of newer ones without allowing unbounded growth."""
         pending = items + self._pending_alerts.get(guild_id, [])
-        overflow = max(0, len(pending) - 32)
-        self._pending_alerts[guild_id] = pending[:32]
+        overflow = max(0, len(pending) - MAX_PENDING_ALERTS)
+        self._pending_alerts[guild_id] = pending[:MAX_PENDING_ALERTS]
         self._dropped_alert_counts[guild_id] = (
             self._dropped_alert_counts.get(guild_id, 0) + dropped + overflow
         )
@@ -394,8 +423,10 @@ class BombaModBot(commands.Bot):
             return
         policy = await self.store.policy(message.guild.id)
         if not policy.moderation_enabled:
+            logger.info("Ignored message in guild %s: moderation not enabled (/bm setup)", message.guild.id)
             return
         if policy.monitored_channel_ids and message.channel.id not in policy.monitored_channel_ids:
+            logger.info("Ignored message in guild %s: channel not monitored", message.guild.id)
             return
         image_urls: list[str] = []
         if policy.image_scan_enabled:
@@ -406,6 +437,10 @@ class BombaModBot(commands.Bot):
                 ):
                     image_urls.append(attachment.url)
         if not message.content and not image_urls:
+            logger.info(
+                "Ignored message in guild %s: empty content (is Message Content Intent enabled?)",
+                message.guild.id,
+            )
             return
         try:
             self._moderation_queue.put_nowait((message, self.message_fingerprint(message)))

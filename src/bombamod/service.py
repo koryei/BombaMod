@@ -167,6 +167,7 @@ class ModerationService:
                 if not result.flagged:
                     decision = Decision(Action.ALLOW, "No moderation category was flagged.")
                     self._register_case(message_id, guild_id, channel_id, user_id, result, decision)
+                    logger.info("Moderated message in guild %s: not flagged", guild_id)
                     return CaseOutcome(result, decision)
                 if not any(result.categories.values()):
                     decision = Decision(
@@ -267,6 +268,13 @@ class ModerationService:
                             message_id=message_id,
                         )
 
+                logger.info(
+                    "Moderated message in guild %s: flagged=%s action=%s (%s)",
+                    guild_id,
+                    result.flagged,
+                    decision.action.value,
+                    decision.reason[:120],
+                )
                 return CaseOutcome(result, decision)
             except (TimeoutError, ProviderError):
                 # Don't log exception messages; they could contain remote response content.
