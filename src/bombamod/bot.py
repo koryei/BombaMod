@@ -191,6 +191,7 @@ class BombaModBot(commands.Bot):
             self.settings.openrouter_api_key,
             self.settings.openrouter_model,
             http,
+            self.settings.openrouter_base_url,
         )
         self.moderation_service = ModerationService(
             store=self.store,

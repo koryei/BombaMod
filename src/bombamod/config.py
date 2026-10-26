@@ -43,6 +43,7 @@ class Settings:
     openai_api_key: str
     openrouter_api_key: str
     openrouter_model: str
+    openrouter_base_url: str
     database_url: str
     discord_guild_id: int | None
     max_concurrent_moderation: int
@@ -79,6 +80,10 @@ class Settings:
         if not model:
             raise ConfigurationError("OPENROUTER_MODEL cannot be empty")
 
+        base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").strip()
+        if not base_url.startswith("https://"):
+            raise ConfigurationError("OPENROUTER_BASE_URL must start with https://")
+
         raw_guild_id = os.getenv("DISCORD_GUILD_ID", "").strip()
         try:
             guild_id = int(raw_guild_id) if raw_guild_id else None
@@ -96,6 +101,7 @@ class Settings:
             openai_api_key=openai_api_key,
             openrouter_api_key=openrouter_api_key,
             openrouter_model=model,
+            openrouter_base_url=base_url,
             database_url=os.getenv("DATABASE_URL", "").strip(),
             discord_guild_id=guild_id,
             max_concurrent_moderation=_integer(

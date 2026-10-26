@@ -23,6 +23,7 @@ def settings() -> Settings:
         openai_api_key="openai",
         openrouter_api_key="router",
         openrouter_model="nvidia/nemotron-3-super-120b-a12b:free",
+        openrouter_base_url="https://openrouter.ai/api/v1",
         database_url="sqlite+aiosqlite:///:memory:",
         discord_guild_id=None,
         max_concurrent_moderation=1,

@@ -133,10 +133,18 @@ class OpenAIProvider:
 
 
 class OpenRouterProvider:
-    def __init__(self, api_key: str, model: str, http: httpx.AsyncClient) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        http: httpx.AsyncClient,
+        base_url: str = "https://openrouter.ai/api/v1",
+    ) -> None:
         self.api_key = api_key
         self.model = model
         self.http = http
+        # Any OpenAI-compatible chat API works here (OpenRouter, Groq, ...).
+        self.url = base_url.rstrip("/") + "/chat/completions"
 
     async def decide(
         self,
@@ -181,9 +189,12 @@ class OpenRouterProvider:
             "temperature": 0,
             "max_tokens": 300,
             "response_format": {"type": "json_object"},
-            # Reasoning models otherwise spend the token budget thinking and return no JSON.
-            "reasoning": {"enabled": False},
         }
+        # Reasoning models otherwise spend the token budget thinking and return no JSON.
+        if "groq.com" in self.url:
+            request["reasoning_effort"] = "low"
+        else:
+            request["reasoning"] = {"enabled": False}
         try:
             headers = {
                 "Authorization": f"Bearer {self.api_key}",
@@ -193,17 +204,18 @@ class OpenRouterProvider:
             }
             response = await _post_with_retry(
                 self.http,
-                "https://openrouter.ai/api/v1/chat/completions",
+                self.url,
                 headers=headers,
                 json_body=request,
             )
             if response.status_code == 400:
                 # Some models mandate reasoning; retry with a budget that leaves room for output.
-                request.pop("reasoning")
+                request.pop("reasoning", None)
+                request.pop("reasoning_effort", None)
                 request["max_tokens"] = 1500
                 response = await _post_with_retry(
                     self.http,
-                    "https://openrouter.ai/api/v1/chat/completions",
+                    self.url,
                     headers=headers,
                     json_body=request,
                 )
