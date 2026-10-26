@@ -305,3 +305,24 @@ async def test_dm_failure_is_swallowed(settings: Settings) -> None:
     member.send = AsyncMock(side_effect=discord.Forbidden(response, "closed"))
 
     await sink._notify(guild, member, Decision(Action.DELETE, "x", confidence=1), "Removed")
+
+
+@pytest.mark.asyncio
+async def test_bad_guild_id_falls_back_to_global_sync(settings: Settings, monkeypatch) -> None:
+    from dataclasses import replace
+
+    bot = BombaModBot(replace(settings, discord_guild_id=123), DummyStore())  # type: ignore[arg-type]
+    response = SimpleNamespace(status=403, reason="forbidden", text="", headers={})
+    calls: list[object] = []
+
+    async def fake_sync(*, guild: object = None) -> list[object]:
+        calls.append(guild)
+        if guild is not None:
+            raise discord.Forbidden(response, "Missing Access")
+        return []
+
+    monkeypatch.setattr(bot.tree, "sync", fake_sync)
+
+    await bot._sync_commands()
+
+    assert len(calls) == 2 and calls[0] is not None and calls[1] is None

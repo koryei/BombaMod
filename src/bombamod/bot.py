@@ -286,12 +286,28 @@ class BombaModBot(commands.Bot):
             asyncio.create_task(self._moderation_worker())
             for _ in range(self.settings.max_concurrent_moderation)
         ]
-        if self.settings.discord_guild_id:
-            guild_object = discord.Object(id=self.settings.discord_guild_id)
+        await self._sync_commands()
+
+    async def _sync_commands(self) -> None:
+        """Register slash commands; a bad DISCORD_GUILD_ID must not stop moderation."""
+        guild_id = self.settings.discord_guild_id
+        if guild_id:
+            guild_object = discord.Object(id=guild_id)
             self.tree.copy_global_to(guild=guild_object)
-            await self.tree.sync(guild=guild_object)
-        else:
+            try:
+                await self.tree.sync(guild=guild_object)
+                return
+            except discord.Forbidden:
+                logger.error(
+                    "Cannot sync commands to DISCORD_GUILD_ID=%s: the bot is not in that server "
+                    "or was invited without the applications.commands scope. Falling back to "
+                    "global sync (new commands can take up to an hour to appear).",
+                    guild_id,
+                )
+        try:
             await self.tree.sync()
+        except discord.HTTPException:
+            logger.error("Slash command sync failed; existing commands keep working")
 
     async def close(self) -> None:
         for task in self._worker_tasks:
